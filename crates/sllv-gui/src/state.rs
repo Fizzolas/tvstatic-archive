@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct EncodeJob {
     pub input: Option<PathBuf>,
     pub out_frames: Option<PathBuf>,
@@ -27,7 +27,7 @@ impl Default for EncodeJob {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct DecodeJob {
     pub input_frames: Option<PathBuf>,
     pub input_mkv: Option<PathBuf>,
@@ -52,11 +52,22 @@ impl Default for DecodeJob {
     }
 }
 
-#[derive(Default)]
 pub struct AppState {
     pub tab: crate::ui::Tab,
     pub encode: EncodeJob,
     pub decode: DecodeJob,
     pub log: String,
     pub show_help: Option<crate::ui::HelpTopic>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            tab: crate::ui::Tab::Encode,
+            encode: EncodeJob::default(),
+            decode: DecodeJob::default(),
+            log: String::new(),
+            show_help: None,
+        }
+    }
 }

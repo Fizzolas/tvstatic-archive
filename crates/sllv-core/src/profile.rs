@@ -1,6 +1,6 @@
 use crate::fec::FecParams;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Profile {
     Archive,
     Scan,
