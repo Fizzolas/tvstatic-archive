@@ -12,42 +12,7 @@ This repo implements two profiles:
 - ✅ Increment 0: repo + draft spec + Rust workspace scaffold
 - ✅ Increment 1a: lossless PNG frame encoder/decoder + optional FFmpeg (FFV1/MKV) wrapper
 - ✅ Increment 1b: package ANY input (file or folder) into a single archive, then encode/decode
-- ⏭️ Next: add sync/calibration frames + fiducials for camera scanning; add stronger ECC
+- ✅ Increment 2a/2b/2c: desktop GUI (Tauri) usable with pickers + progress
+- ✅ Increment 3a (part 2): Android app skeleton with SAF pickers (copy/FFI wiring next)
+- ⏭️ Next: implement SAF URI ↔ local cache copying and call the Rust FFI; then add sync/calibration/fiducials
 
-## Quick start (Increment 1b)
-
-### Build
-
-```bash
-cargo build -p sllv-cli --release
-```
-
-### Encode a file or folder into frames
-
-```bash
-./target/release/sllv encode --input path/to/anything --out-dir out_frames
-```
-
-### Decode frames back into the original archive
-
-```bash
-./target/release/sllv decode --in-dir out_frames --output recovered.tar
-```
-
-### Unpack the recovered archive
-
-```bash
-mkdir recovered && tar -xf recovered.tar -C recovered
-```
-
-### Optional: Wrap frames into a lossless MKV (FFV1)
-
-If `ffmpeg` is installed:
-
-```bash
-./target/release/sllv make-video --in-dir out_frames --output out.mkv --fps 30
-./target/release/sllv extract-frames --input out.mkv --out-dir extracted_frames --fps 30
-./target/release/sllv decode --in-dir extracted_frames --output recovered.tar
-```
-
-See `SPEC.md` for the draft format.

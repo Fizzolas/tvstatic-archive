@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="SLLV Android (Increment 3a)"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Encode any file/folder into frames, or decode frames into a tar archive."
+        android:layout_marginTop="6dp" />
+
+    <View android:layout_width="match_parent" android:layout_height="12dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Encode" />
+
+    <Button
+        android:id="@+id/btnPickFile"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Pick input file" />
+
+    <Button
+        android:id="@+id/btnPickFolder"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Pick input folder" />
+
+    <Button
+        android:id="@+id/btnPickFramesOut"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Pick output frames folder" />
+
+    <Button
+        android:id="@+id/btnEncode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Encode" />
+
+    <View android:layout_width="match_parent" android:layout_height="12dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Decode" />
+
+    <Button
+        android:id="@+id/btnPickFramesIn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Pick frames folder" />
+
+    <Button
+        android:id="@+id/btnPickTarOut"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Pick output tar" />
+
+    <Button
+        android:id="@+id/btnDecode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Decode" />
+
+    <View android:layout_width="match_parent" android:layout_height="12dp" />
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="100"
+        android:progress="0" />
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Idle"
+        android:layout_marginTop="8dp" />
+
+</LinearLayout>
