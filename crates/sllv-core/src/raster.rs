@@ -15,6 +15,11 @@ pub struct RasterParams {
     pub cell_px: u32,
     pub chunk_bytes: u32,
     pub palette: Palette8,
+
+    // Sync/calibration
+    pub sync_frames: u32,
+    pub sync_color_symbol: u8,
+    pub calibration_frames: u32,
 }
 
 impl Default for RasterParams {
@@ -25,6 +30,10 @@ impl Default for RasterParams {
             cell_px: 2,
             chunk_bytes: 24 * 1024,
             palette: Palette8::Basic,
+
+            sync_frames: 30,
+            sync_color_symbol: 1, // white
+            calibration_frames: 1,
         }
     }
 }
@@ -55,50 +64,72 @@ pub fn encode_bytes_to_frames_dir(
 
     let mut hasher = Sha256::new();
     hasher.update(input_bytes);
-    let sha256 = hasher.finalize();
-    let sha256_hex = hex::encode(sha256);
+    let sha256_hex = hex::encode(hasher.finalize());
 
     let cells = (p.grid_w as usize) * (p.grid_h as usize);
     let bits = cells * 3;
     let bytes_per_frame = bits / 8;
 
-    // cap payload by chunk_bytes so later we can tune reliability.
     let payload_bytes = std::cmp::min(bytes_per_frame as u32, p.chunk_bytes) as usize;
 
-    let mut frames = 0u32;
+    // 1) Write sync slate frames.
+    for i in 0..p.sync_frames {
+        let img = render_solid_frame(p, p.sync_color_symbol)?;
+        let path = out_dir.join(format!("frame_{:06}.png", i));
+        img.save(path)?;
+    }
+
+    // 2) Write calibration frame(s): palette strip + simple checker.
+    for j in 0..p.calibration_frames {
+        let idx = p.sync_frames + j;
+        let img = render_calibration_frame(p)?;
+        let path = out_dir.join(format!("frame_{:06}.png", idx));
+        img.save(path)?;
+    }
+
+    // 3) Data frames.
+    let mut data_frames = 0u32;
     for (i, chunk) in input_bytes.chunks(payload_bytes).enumerate() {
         let mut frame_payload = vec![0u8; payload_bytes];
         frame_payload[..chunk.len()].copy_from_slice(chunk);
 
         let img = render_frame(&frame_payload, p)?;
-        let path = out_dir.join(format!("frame_{:06}.png", i));
+        let frame_index = p.sync_frames + p.calibration_frames + (i as u32);
+        let path = out_dir.join(format!("frame_{:06}.png", frame_index));
         img.save(path)?;
-        frames += 1;
+        data_frames += 1;
     }
+
+    let total_frames = p.sync_frames + p.calibration_frames + data_frames;
 
     let manifest = EncodeManifest {
         magic: EncodeManifest::MAGIC.to_string(),
         version: EncodeManifest::VERSION,
+
         file_name: file_name.to_string(),
         total_bytes: input_bytes.len() as u64,
         chunk_bytes: payload_bytes as u32,
+
         grid_w: p.grid_w,
         grid_h: p.grid_h,
         cell_px: p.cell_px,
+
         palette: p.palette.id().to_string(),
         sha256_hex,
-        frames,
+        frames: total_frames,
     };
 
     let manifest_path = out_dir.join("manifest.json");
     fs::write(manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
 
-    // tiny sidecar for human debugging
     let meta = json!({
         "bytes_per_frame_theoretical": bytes_per_frame,
         "bytes_per_frame_used": payload_bytes,
         "cells": cells,
-        "bits_per_cell": 3
+        "bits_per_cell": 3,
+        "sync_frames": p.sync_frames,
+        "calibration_frames": p.calibration_frames,
+        "data_frames": data_frames
     });
     fs::write(out_dir.join("debug.json"), serde_json::to_vec_pretty(&meta)?)?;
 
@@ -117,8 +148,17 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 
     let palette = Palette8::Basic;
 
+    // Determine how many non-data frames exist by scanning leading frames:
+    // - sync frames are solid color
+    // - calibration frame contains palette strip
+    // For Increment 3b we encode with RasterParams default, so use that.
+    let p = RasterParams::default();
+    let start_index = p.sync_frames + p.calibration_frames;
+
     let mut out = Vec::with_capacity(manifest.total_bytes as usize);
-    for i in 0..manifest.frames {
+
+    // Read from start_index up to manifest.frames.
+    for i in start_index..manifest.frames {
         let path = in_dir.join(format!("frame_{:06}.png", i));
         let bytes = decode_frame(&path, &manifest, palette)?;
         out.extend_from_slice(&bytes);
@@ -156,6 +196,57 @@ fn render_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>,
     Ok(img)
 }
 
+fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
+    let w_px = p.grid_w * p.cell_px;
+    let h_px = p.grid_h * p.cell_px;
+    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
+    let Rgb8 { r, g, b } = p.palette.color(symbol).unwrap();
+    for y in 0..p.grid_h {
+        for x in 0..p.grid_w {
+            paint_cell(&mut img, x, y, p.cell_px, r, g, b);
+        }
+    }
+    Ok(img)
+}
+
+fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
+    // Simple calibration: top row stripes of each palette color + checkerboard below.
+    let w_px = p.grid_w * p.cell_px;
+    let h_px = p.grid_h * p.cell_px;
+    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
+
+    // Fill with black.
+    for y in 0..p.grid_h {
+        for x in 0..p.grid_w {
+            paint_cell(&mut img, x, y, p.cell_px, 0, 0, 0);
+        }
+    }
+
+    // Palette strip uses first 8*block_w cells across the top.
+    let block_w = std::cmp::max(1, p.grid_w / 8);
+    for sym in 0u8..8u8 {
+        let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
+        let x0 = (sym as u32) * block_w;
+        let x1 = std::cmp::min(p.grid_w, x0 + block_w);
+        for y in 0..std::cmp::min(4, p.grid_h) {
+            for x in x0..x1 {
+                paint_cell(&mut img, x, y, p.cell_px, r, g, b);
+            }
+        }
+    }
+
+    // Checkerboard region.
+    for y in 4..p.grid_h {
+        for x in 0..p.grid_w {
+            let sym = if ((x ^ y) & 1) == 0 { 1 } else { 0 };
+            let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
+            paint_cell(&mut img, x, y, p.cell_px, r, g, b);
+        }
+    }
+
+    Ok(img)
+}
+
 fn decode_frame(path: &Path, m: &EncodeManifest, palette: Palette8) -> Result<Vec<u8>, RasterError> {
     let dyn_img = image::open(path)?;
     let img = dyn_img.to_rgb8();
@@ -172,7 +263,6 @@ fn decode_frame(path: &Path, m: &EncodeManifest, palette: Palette8) -> Result<Ve
             write_3bits(&mut payload, bit_i, sym);
             bit_i += 3;
 
-            // Stop once we've filled the expected payload length.
             if (bit_i / 8) >= payload.len() {
                 return Ok(payload);
             }
@@ -193,7 +283,6 @@ fn paint_cell(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x: u32, y: u32, cell_px: 
 }
 
 fn read_3bits(bytes: &[u8], bit_i: usize) -> u8 {
-    // Read 3 bits little-endian within the bitstream.
     let mut v = 0u8;
     for k in 0..3 {
         let i = bit_i + k;

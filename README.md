@@ -13,6 +13,7 @@ This repo implements two profiles:
 - ✅ Increment 1a: lossless PNG frame encoder/decoder + optional FFmpeg (FFV1/MKV) wrapper
 - ✅ Increment 1b: package ANY input (file or folder) into a single archive, then encode/decode
 - ✅ Increment 2a/2b/2c: desktop GUI (Tauri) usable with pickers + progress
-- ✅ Increment 3a (part 2): Android app skeleton with SAF pickers (copy/FFI wiring next)
-- ⏭️ Next: implement SAF URI ↔ local cache copying and call the Rust FFI; then add sync/calibration/fiducials
+- ✅ Increment 3a (Android): usable encode/decode via SAF staging + JNI calling Rust
+- ✅ Increment 3b: sync slate + calibration frame prepended to every encode
+- ⏭️ Next: fiducials/borders + nearest-color classification; then video-first workflows
 

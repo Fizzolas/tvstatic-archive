@@ -9,44 +9,25 @@
   - Video file on disk (exact pixels possible with lossless codecs).
   - Live camera capture of a playing video (drop/blur tolerant).
 
-## Increment 1b scope (implemented)
+## Increment 3b scope (implemented)
 
-- Accept ANY input:
-  - file => archived as tar
-  - directory => archived as tar (recursive)
-- Encode archive bytes into frames.
-- Decode frames back into the same tar bytes (sha256 verified).
+- Add a **sync slate** (solid color frames) at the start of every encode.
+- Add a **calibration frame** after the sync slate containing a palette strip and a checkerboard.
 
-Why tar?
-- Works for arbitrary binary data and preserves directory structure.
-- Cross-platform with standard tooling.
+This aligns with the overall goal of camera scanning, where exposure/white balance and palette classification matter. Color calibration/white balance tools exist specifically to stabilize color under varying lighting/cameras, and the calibration frame is an in-band analog of that idea. [web:145]
 
 ## High-level pipeline
 
 1. Input path is packaged into a single `tar` byte stream.
 2. Data is chunked into fixed-size payloads.
-3. Each chunk becomes one frame.
-4. Each frame is a grid of colored cells representing 3-bit symbols.
+3. A fixed number of sync/calibration frames are prepended.
+4. Each payload chunk becomes one data frame.
 
 > Note: Fountain codes + stronger ECC are planned for later increments.
 
-## Frame structure (Increment 1b)
+## Frame structure (Increment 3b)
 
-- The output image is a square lattice of cells.
-- The payload area is currently the full grid (fiducials/borders will be added next).
-
-### Parameters
-
-- `grid_w`, `grid_h`: number of data cells.
-- `cell_px`: pixel size of each cell.
-- `palette`: 8 fixed RGB colors.
-- `payload_bits_per_cell`: 3
-
-## Container fields (frame directory)
-
-The encoder writes:
-
-- `manifest.json`: format metadata + chunk sizes + total bytes + sha256.
-- `payload.tar`: (optional) not written by default; used only for debugging.
-- `frame_000000.png` ... `frame_N.png`: payload frames.
+- Segment 0: Sync slate (default 30 frames)
+- Segment 1: Calibration (default 1 frame)
+- Segment 2: Data frames
 
