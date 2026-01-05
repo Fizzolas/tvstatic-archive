@@ -28,7 +28,6 @@ pub struct RasterParams {
 
     pub fec: Option<FecParams>,
 
-    // Decode pre-processing
     pub deskew: bool,
 }
 
@@ -166,11 +165,11 @@ pub fn encode_bytes_to_frames_dir(
             "border_cells": p.border_cells,
             "fiducial_size_cells": p.fiducial_size_cells,
             "deskew": p.deskew,
-            "fec": {
+            "fec": p.fec.as_ref().map(|fecp| json!({
               "data_shards": fecp.data_shards,
               "parity_shards": fecp.parity_shards,
               "shard_bytes": fecp.shard_bytes
-            }
+            }))
         });
         fs::write(out_dir.join("debug.json"), serde_json::to_vec_pretty(&meta)?)?;
 
@@ -205,6 +204,13 @@ pub fn encode_bytes_to_frames_dir(
 }
 
 pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError> {
+    decode_frames_dir_to_bytes_with_params(in_dir, &RasterParams::default())
+}
+
+pub fn decode_frames_dir_to_bytes_with_params(
+    in_dir: &Path,
+    p: &RasterParams,
+) -> Result<Vec<u8>, RasterError> {
     let manifest_path = in_dir.join("manifest.json");
     if !manifest_path.exists() {
         return Err(RasterError::ManifestMissing);
@@ -215,8 +221,7 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
     }
 
     let palette = Palette8::Basic;
-    let p = RasterParams::default();
-    let start_index = detect_data_start(in_dir, &manifest, &p, palette);
+    let start_index = detect_data_start(in_dir, &manifest, p, palette);
 
     if let Some(fecp) = &p.fec {
         let mut packets: Vec<ShardPacket> = Vec::new();
@@ -224,7 +229,7 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 
         for i in start_index..manifest.frames {
             let path = in_dir.join(format!("frame_{:06}.png", i));
-            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, &p, palette)?;
+            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, p, palette)?;
 
             if bytes.len() < ShardHeader::BYTES {
                 continue;
@@ -274,7 +279,7 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
         let mut out = Vec::with_capacity(manifest.total_bytes as usize);
         for i in start_index..manifest.frames {
             let path = in_dir.join(format!("frame_{:06}.png", i));
-            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, &p, palette)?;
+            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, p, palette)?;
             out.extend_from_slice(&bytes);
         }
         out.truncate(manifest.total_bytes as usize);
@@ -316,20 +321,16 @@ fn deskew_with_fiducials(
     p: &RasterParams,
     palette: Palette8,
 ) -> Option<image::ImageBuffer<Rgb<u8>, Vec<u8>>> {
-    // Detect each corner by scanning a window near that corner and finding pixels
-    // closest to the expected fiducial symbol.
-
     let w = img.width();
     let h = img.height();
 
     let win = (p.fiducial_size_cells * p.cell_px * 3).min(w.min(h) / 2).max(32);
 
-    let tl = find_color_centroid(img, 0, 0, win, win, 2, palette)?; // red
-    let tr = find_color_centroid(img, w - win, 0, win, win, 3, palette)?; // green
-    let bl = find_color_centroid(img, 0, h - win, win, win, 4, palette)?; // blue
-    let br = find_color_centroid(img, w - win, h - win, win, win, 7, palette)?; // yellow
+    let tl = find_color_centroid(img, 0, 0, win, win, 2, palette)?;
+    let tr = find_color_centroid(img, w - win, 0, win, win, 3, palette)?;
+    let bl = find_color_centroid(img, 0, h - win, win, win, 4, palette)?;
+    let br = find_color_centroid(img, w - win, h - win, win, win, 7, palette)?;
 
-    // Destination: full canonical frame pixel dimensions (including border).
     let dst_w = (m.grid_w + 2 * p.border_cells) * m.cell_px;
     let dst_h = (m.grid_h + 2 * p.border_cells) * m.cell_px;
 
@@ -378,7 +379,6 @@ fn find_color_centroid(
         for x in x0..(x0 + w) {
             let p0 = img.get_pixel(x, y);
             let d = rgb_dist2(p0[0], p0[1], p0[2], expected.r, expected.g, expected.b);
-            // loose threshold: allow quite a bit of camera drift
             if d < 60_000 {
                 sum_x += x as u64;
                 sum_y += y as u64;

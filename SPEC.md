@@ -2,9 +2,9 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3j scope (implemented)
+## Increment 3k scope (implemented)
 
-- Add explicit **profile presets**: Archive vs Scan.
+- Decoder now accepts explicit parameters (profile presets can reliably influence deskew + FEC).
 
-Scan workflows need perspective correction and tolerate dropped frames; this is why the scan preset enables deskew and erasure coding, while the archive preset can disable them when using a lossless FFV1 pipeline. [web:60][web:258]
+This matters because scan workflows need perspective correction (homography warp) and redundancy, while archive workflows can skip them when using a lossless FFV1 pipeline. [web:60][web:258]
 

@@ -101,12 +101,8 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("must provide --input-frames or --input-mkv");
             };
 
-            // Profile currently influences decoder via default RasterParams.
-            // For now, we just run the core decoder (which auto-detects data start and deskews if enabled).
-            // Next increment can plumb params explicitly into decode.
-            let _ = profile;
-
-            let bytes = sllv_core::raster::decode_frames_dir_to_bytes(&frames_dir)
+            let (rp, _) = profile.to_profile().defaults();
+            let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_params(&frames_dir, &rp)
                 .context("decode frames")?;
             std::fs::write(&out_tar, bytes).context("write recovered tar")?;
         }

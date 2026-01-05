@@ -9,22 +9,18 @@ This repo implements two profiles:
 
 ## CLI quickstart
 
-Archive profile (frames + optional MKV):
+Archive profile:
 
 ```bash
 sllv encode --profile archive --input ./my_folder --out-frames ./frames --out-mkv ./out.mkv --fps 24
+sllv decode --profile archive --input-mkv ./out.mkv --out-tar ./recovered.tar
 ```
 
-Scan profile (bigger cells + more redundancy):
+Scan profile:
 
 ```bash
 sllv encode --profile scan --input ./my_folder --out-frames ./frames_scan --fps 12
-```
-
-Decode from MKV:
-
-```bash
-sllv decode --profile archive --input-mkv ./out.mkv --out-tar ./recovered.tar
+sllv decode --profile scan --input-frames ./frames_scan --out-tar ./recovered.tar
 ```
 
 ## Notes
@@ -40,6 +36,6 @@ sllv decode --profile archive --input-mkv ./out.mkv --out-tar ./recovered.tar
 - ✅ Increment 2a/2b/2c: desktop GUI (Tauri) usable with pickers + progress
 - ✅ Increment 3a (Android): usable encode/decode via SAF staging + JNI calling Rust
 - ✅ Increment 3b-3i: sync+calibration + border + fiducials + RS shards + deskew
-- ✅ Increment 3j: profile presets (archive vs scan)
-- ⏭️ Next: plumb profile params into decode + GUI profile toggles
+- ✅ Increment 3j/3k: profile presets + decode respects profile params
+- ⏭️ Next: expose profiles in desktop+android GUIs
 
