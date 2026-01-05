@@ -1,5 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 
 const el = document.getElementById('app');
@@ -14,7 +14,14 @@ el.innerHTML = `
         <h3>Encode</h3>
 
         <div>
-          <button id="pick_in">Pick input (file/folder)</button>
+          <label><input type="radio" name="enc_mode" value="file" checked /> File</label>
+          <label style="margin-left:10px"><input type="radio" name="enc_mode" value="folder" /> Folder</label>
+        </div>
+
+        <div style="height:8px"></div>
+
+        <div>
+          <button id="pick_in">Pick input</button>
           <div id="enc_in" style="margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all;"></div>
         </div>
 
@@ -93,10 +100,16 @@ await listen('task_result', (event) => {
   log((r.ok ? '[ok] ' : '[err] ') + r.message);
 });
 
+function encMode() {
+  const el = document.querySelector('input[name="enc_mode"]:checked');
+  return el ? el.value : 'file';
+}
+
 // Pickers
 
 document.getElementById('pick_in').onclick = async () => {
-  const v = await open({ multiple: false, directory: false });
+  const mode = encMode();
+  const v = await open({ multiple: false, directory: mode === 'folder' });
   if (v) {
     encodeInput = v;
     document.getElementById('enc_in').textContent = v;
@@ -120,9 +133,10 @@ document.getElementById('pick_frames').onclick = async () => {
 };
 
 document.getElementById('pick_tar').onclick = async () => {
-  // dialog plugin doesn't provide save dialog here; use a pragmatic input for now.
-  // Next increment will add a proper save dialog.
-  const v = prompt('Enter output tar path (e.g., /home/user/Downloads/recovered.tar)');
+  const v = await save({
+    defaultPath: 'recovered.tar',
+    filters: [{ name: 'TAR Archive', extensions: ['tar'] }]
+  });
   if (v) {
     decodeOut = v;
     document.getElementById('dec_out').textContent = v;
