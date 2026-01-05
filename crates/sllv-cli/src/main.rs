@@ -77,15 +77,12 @@ fn main() -> anyhow::Result<()> {
             profile,
             ffmpeg_path,
         } => {
-            let tar = sllv_core::pack::pack_path_to_tar_bytes(&input).context("pack input")?;
-            let (rp, _) = profile.to_profile().defaults();
+            let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(&input).context("pack input")?;
+            let rp = profile.to_profile().defaults();
 
             let manifest = sllv_core::raster::encode_bytes_to_frames_dir(
                 &tar,
-                input
-                    .file_name()
-                    .and_then(|x| x.to_str())
-                    .unwrap_or("input"),
+                &name,
                 &out_frames,
                 &rp,
             )
@@ -119,7 +116,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("must provide --input-frames or --input-mkv");
             };
 
-            let (rp, _) = profile.to_profile().defaults();
+            let rp = profile.to_profile().defaults();
             let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_params(&frames_dir, &rp)
                 .context("decode frames")?;
             std::fs::write(&out_tar, bytes).context("write recovered tar")?;
@@ -138,18 +135,15 @@ fn main() -> anyhow::Result<()> {
 fn run_doctor(check_ffmpeg: bool, ffmpeg_path: Option<&Path>) -> anyhow::Result<()> {
     println!("SLLV doctor");
 
-    // Basic info
-    println!("- Rust: ok (running binary)");
+    println!("- Temp dir: {}", std::env::temp_dir().display());
 
     // Temp write test
     let tmp = std::env::temp_dir().join("sllv_doctor_write_test.tmp");
     std::fs::write(&tmp, b"ok").context("write temp")?;
     std::fs::remove_file(&tmp).ok();
-    println!("- Temp dir write: ok ({})", std::env::temp_dir().display());
+    println!("- Temp dir write: ok");
 
     if check_ffmpeg {
-        // Delegate to ffmpeg module resolve/probe via a harmless mkv_to_frames argument check.
-        // We just call the internal probe via mkv_to_frames with a non-existent file? No: keep simple.
         let p = ffmpeg_path
             .map(|x| x.display().to_string())
             .unwrap_or_else(|| "(PATH)".to_string());
@@ -158,8 +152,6 @@ fn run_doctor(check_ffmpeg: bool, ffmpeg_path: Option<&Path>) -> anyhow::Result<
                 println!("- FFmpeg: ok ({p})");
             }
             Err(e) => {
-                // If ffmpeg is available, this will usually fail because input doesn't exist.
-                // So distinguish 'not found' from 'input missing' loosely.
                 let msg = format!("{e:#}");
                 if msg.to_lowercase().contains("not found") {
                     println!("- FFmpeg: missing ({p})");

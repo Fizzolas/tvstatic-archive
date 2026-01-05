@@ -1,22 +1,22 @@
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use tar::Builder;
 use thiserror::Error;
-use walkdir::WalkDir;
+use walkdir::{WalkDir, Error as WalkDirError};
 
 #[derive(Debug, Error)]
 pub enum PackError {
     #[error("io: {0}")]
     Io(#[from] io::Error),
+    #[error("walkdir: {0}")]
+    WalkDir(#[from] WalkDirError),
     #[error("invalid input path")]
     InvalidInput,
 }
 
 /// Package a file or directory (recursively) into a tar byte stream.
 ///
-/// This is deliberately *not compressed* here; later increments may optionally
-/// compress before ECC/encoding.
+/// This is deliberately *not compressed* here; a later step can compress before FEC/encoding.
 pub fn pack_path_to_tar_bytes(input: &Path) -> Result<(Vec<u8>, String), PackError> {
     if !input.exists() {
         return Err(PackError::InvalidInput);
@@ -52,6 +52,5 @@ pub fn pack_path_to_tar_bytes(input: &Path) -> Result<(Vec<u8>, String), PackErr
         builder.finish()?;
     }
 
-    // Ensure tar is finalized by dropping builder.
     Ok((out, file_name))
 }
