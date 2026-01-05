@@ -16,6 +16,6 @@ pub use raster::{
     RasterError,
 };
 pub use pack::{pack_path_to_tar_bytes, PackError};
-pub use fec::{fec_encode_stream, fec_decode_collect, FecParams, FecError};
+pub use fec::{fec_encode_stream, fec_decode_collect, FecParams, FecError, ShardPacket};
 pub use warp::{homography_from_4, warp_perspective_nearest, Pt2, WarpError};
 pub use profile::Profile;

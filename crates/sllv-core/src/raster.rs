@@ -30,3 +30,47 @@ pub struct RasterParams {
 
     pub deskew: bool,
 }
+
+impl Default for RasterParams {
+    fn default() -> Self {
+        Self {
+            grid_w: 256,
+            grid_h: 256,
+            cell_px: 2,
+            chunk_bytes: 24 * 1024,
+            palette: Palette8::Basic,
+
+            sync_frames: 30,
+            sync_color_symbol: 1,
+            calibration_frames: 1,
+
+            border_cells: 2,
+
+            fiducial_size_cells: 12,
+
+            fec: Some(FecParams::default()),
+
+            deskew: true,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum RasterError {
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("image: {0}")]
+    Image(#[from] image::ImageError),
+    #[error("manifest missing")]
+    ManifestMissing,
+    #[error("manifest invalid magic/version")]
+    ManifestInvalid,
+    #[error("sha256 mismatch")]
+    ShaMismatch,
+    #[error("fec: {0}")]
+    Fec(String),
+}
+
+// (rest of file unchanged)
