@@ -2,25 +2,16 @@
 
 > Working name for the custom symbology/container.
 
-## Goals
+## Increment 3d (part 2) scope (implemented)
 
-- Encode arbitrary bytes into a dense, robust video representation.
-- Decode from:
-  - Video file on disk (exact pixels possible with lossless codecs).
-  - Live camera capture of a playing video (drop/blur tolerant).
+- Frames now carry **shards** instead of raw file chunks.
+- Reed–Solomon erasure coding groups are encoded into data+parity shards.
+- Each shard becomes one frame (after sync+calibration).
 
-## Increment 3d scope (implemented)
+This aligns with animated/visual transfer designs where frames may be dropped; robust designs often use fountain/erasure layers so recovery does not require perfect capture. [web:40][web:44]
 
-- Add a first Forward Error Correction (FEC) layer using **Reed–Solomon erasure coding**.
+## Current limitations (next increment)
 
-This is specifically to survive frame loss: erasure coding can reconstruct missing shards given enough redundancy, but it does not fix arbitrary bit errors—those should be detected (checksums) and treated as missing, which the crate docs warn about. [web:157]
-
-## FEC model (draft)
-
-- Data is divided into groups.
-- Each group becomes N data shards + M parity shards.
-- Each shard is independently checksummed.
-- Shards are the unit that will map into frames in later increments.
-
-Next: wire this into the raster encoder so frames carry shard headers.
+- Shard header currently contains only a 4-byte SHA prefix; full per-shard verification will be added next.
+- Decoder currently assumes default sync/calibration settings.
 

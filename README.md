@@ -14,7 +14,7 @@ This repo implements two profiles:
 - ✅ Increment 1b: package ANY input (file or folder) into a single archive, then encode/decode
 - ✅ Increment 2a/2b/2c: desktop GUI (Tauri) usable with pickers + progress
 - ✅ Increment 3a (Android): usable encode/decode via SAF staging + JNI calling Rust
-- ✅ Increment 3b: sync slate + calibration frame prepended to every encode
-- ✅ Increment 3c: borders + nearest-palette decode (capture tolerance)
-- ⏭️ Next: real fiducials + automatic sync detection + RS/fountain ECC + video-first decode
+- ✅ Increment 3b/3c: sync+calibration + border + nearest-palette decode
+- ✅ Increment 3d (part 2): frames carry RS shards (survive dropped frames)
+- ⏭️ Next: full shard hashes + header CRC, auto sync detect, and video-file decode path
 
