@@ -2,16 +2,11 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3d (part 2) scope (implemented)
+## Increment 3e scope (implemented)
 
-- Frames now carry **shards** instead of raw file chunks.
-- Reed–Solomon erasure coding groups are encoded into data+parity shards.
-- Each shard becomes one frame (after sync+calibration).
+- Store the **full per-shard SHA-256** in the shard header.
+- Add **CRC32** on the shard header to quickly reject corrupted headers.
+- Add a heuristic **auto-detection** of sync+calibration so decode is less brittle.
 
-This aligns with animated/visual transfer designs where frames may be dropped; robust designs often use fountain/erasure layers so recovery does not require perfect capture. [web:40][web:44]
-
-## Current limitations (next increment)
-
-- Shard header currently contains only a 4-byte SHA prefix; full per-shard verification will be added next.
-- Decoder currently assumes default sync/calibration settings.
+Erasure coding relies on treating corrupted shards as missing (not as wrong data), so per-shard verification is necessary for robust scanning pipelines. [web:157]
 

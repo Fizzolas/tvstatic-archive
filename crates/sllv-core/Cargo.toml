@@ -1,6 +1,6 @@
 [package]
 name = "sllv-core"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 
 [dependencies]
@@ -15,3 +15,4 @@ walkdir = "2"
 tar = "0.4"
 
 reed-solomon-erasure = "6"
+crc32fast = "1"
