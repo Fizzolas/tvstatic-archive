@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Parser, Debug)]
@@ -13,7 +13,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Encode a file into numbered PNG frames (Increment 1a).
+    /// Encode any input path (file or folder) into numbered PNG frames.
     Encode {
         #[arg(long)]
         input: PathBuf,
@@ -29,7 +29,7 @@ enum Cmd {
         chunk_bytes: u32,
     },
 
-    /// Decode numbered PNG frames back into the original file (Increment 1a).
+    /// Decode numbered PNG frames back into the original tar archive.
     Decode {
         #[arg(long)]
         in_dir: PathBuf,
@@ -70,11 +70,8 @@ fn main() -> Result<()> {
             cell_px,
             chunk_bytes,
         } => {
-            let bytes = fs::read(&input).with_context(|| format!("read {:?}", input))?;
-            let file_name = input
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("input.bin");
+            let (tar_bytes, name) = sllv_core::pack_path_to_tar_bytes(&input)
+                .with_context(|| format!("pack input {:?} to tar", input))?;
 
             let p = sllv_core::RasterParams {
                 grid_w,
@@ -84,16 +81,17 @@ fn main() -> Result<()> {
                 palette: sllv_core::Palette8::Basic,
             };
 
-            let m = sllv_core::encode_bytes_to_frames_dir(&bytes, file_name, &out_dir, &p)
+            let m = sllv_core::encode_bytes_to_frames_dir(&tar_bytes, &format!("{}.tar", name), &out_dir, &p)
                 .with_context(|| "encode frames")?;
 
+            println!("Packed as {} ({} bytes)", m.file_name, m.total_bytes);
             println!("Wrote {} frames to {:?}", m.frames, out_dir);
         }
 
         Cmd::Decode { in_dir, output } => {
             let bytes = sllv_core::decode_frames_dir_to_bytes(&in_dir).with_context(|| "decode")?;
             fs::write(&output, bytes).with_context(|| format!("write {:?}", output))?;
-            println!("Wrote recovered file to {:?}", output);
+            println!("Wrote recovered archive to {:?}", output);
         }
 
         Cmd::MakeVideo { in_dir, output, fps } => {
