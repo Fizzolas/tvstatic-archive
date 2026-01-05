@@ -1,15 +1,17 @@
 # SLLV — Static Lattice Video Codec
 
-SLLV is a small tool that turns files/folders into a sequence of “TV static” frames (or a lossless video) and can recover the original bytes later.
+SLLV turns files/folders into a sequence of “TV static” frames (or an optional lossless video) and can recover the original bytes later.
 
-It supports two workflows:
+## What it does
 
-- **Archive**: produce frames and optionally wrap them in Matroska/FFV1 for truly lossless storage.
-- **Scan**: produce camera-friendly frames (bigger cells + redundancy) meant for screen-to-phone capture.
+- Packs your input (file or folder) into a tar archive.
+- Encodes bytes into color-cell frames (8-color palette, 3 bits per cell).
+- Optionally wraps frames into Matroska/FFV1 for truly lossless archival storage.
+- Can decode from frames (scan workflow) or from MKV (archive workflow) back into the original tar bytes.
 
-## Build and run
+## Quick start
 
-### One-command build
+### 1) Build a standalone binary
 
 - Windows (PowerShell):
 
@@ -29,41 +31,71 @@ scripts\build.bat
 ./scripts/build.sh
 ```
 
-Binaries will be placed in `dist/`.
+The binary will be placed at:
 
-### Quick sanity check
+- Windows: `dist\sllv.exe`
+- macOS/Linux: `dist/sllv`
+
+### 2) Run a sanity check
 
 ```bash
 ./dist/sllv doctor
-# If you plan to use MKV/FFV1:
+```
+
+If you plan to use MKV/FFV1:
+
+```bash
 ./dist/sllv doctor --check-ffmpeg
 ```
 
-### CLI usage
+## Usage
 
-Encode:
+### Encode
+
+Archive (frames + optional MKV):
 
 ```bash
-# archive profile
 ./dist/sllv encode --profile archive --input ./my_folder --out-frames ./frames --out-mkv ./out.mkv --fps 24
+```
 
-# scan profile
+Scan (frames tuned for phone capture):
+
+```bash
 ./dist/sllv encode --profile scan --input ./my_folder --out-frames ./frames_scan --fps 12
 ```
 
-Decode:
+### Decode
+
+Decode from MKV (Archive workflow):
 
 ```bash
-# decode from mkv
 ./dist/sllv decode --profile archive --input-mkv ./out.mkv --out-tar ./recovered.tar
+```
 
-# decode from frames dir
+Decode from frames directory (Scan workflow):
+
+```bash
 ./dist/sllv decode --profile scan --input-frames ./frames_scan --out-tar ./recovered.tar
 ```
 
-### FFmpeg notes
+## Install files (what exists today)
 
-If ffmpeg isn't on PATH, pass it explicitly:
+This repo currently ships **build scripts**, not installers.
+
+- `scripts/build.bat` — Windows cmd build script → produces `dist\sllv.exe`
+- `scripts/build.ps1` — Windows PowerShell build script → produces `dist\sllv.exe`
+- `scripts/build.sh` — macOS/Linux build script → produces `dist/sllv`
+
+These scripts require the Rust toolchain to be installed.
+
+### FFmpeg requirement (only for MKV)
+
+FFmpeg is only needed when:
+
+- You pass `--out-mkv` to `encode`, or
+- You pass `--input-mkv` to `decode`.
+
+If ffmpeg isn’t on PATH, pass it explicitly:
 
 ```bash
 ./dist/sllv encode ... --ffmpeg-path /path/to/ffmpeg
@@ -72,14 +104,9 @@ If ffmpeg isn't on PATH, pass it explicitly:
 
 FFV1 in Matroska is commonly used for lossless/archival workflows. [web:60]
 
-## Installers / packages
+## Releases later
 
-This repo includes a simple local build script that produces a standalone CLI binary per platform.
-
-Optional packaging helpers are provided:
-
-- Windows MSI: use `cargo-wix` (requires WiX Toolset installed). [web:303]
-- Cross-platform release automation: `cargo-dist` (recommended for CI). [web:301]
+When a standalone binary is ready to share, GitHub Releases can host downloadable build artifacts (attach binaries on the release page). [web:333][web:319]
 
 ## Changelog
 
