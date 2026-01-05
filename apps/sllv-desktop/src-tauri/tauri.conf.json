@@ -1,25 +1,5 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
   "productName": "SLLV",
-  "version": "0.0.1",
-  "identifier": "com.fizzolas.sllv",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:5173",
-    "frontendDist": "../dist"
-  },
-  "app": {
-    "windows": [
-      {
-        "title": "SLLV",
-        "width": 980,
-        "height": 720,
-        "resizable": true
-      }
-    ],
-    "security": {
-      "csp": null
-    }
-  }
+  "version": "0.0.2",
+  "identifier": "com.fizzolas.sllv"
 }
