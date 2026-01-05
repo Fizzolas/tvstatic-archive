@@ -108,38 +108,31 @@ pub fn fec_decode_collect(packets: Vec<ShardPacket>, total_bytes: usize, p: &Fec
     let mut out: Vec<u8> = Vec::with_capacity(total_bytes);
 
     for (_g, shards_opt) in by_group {
-        // Prepare shards for reconstruct.
-        let mut shards: Vec<Option<Vec<u8>>> = shards_opt;
-        let mut refs: Vec<Option<Vec<u8>>> = Vec::with_capacity(total_shards);
-
-        for s in shards.iter_mut() {
-            if let Some(v) = s.take() {
-                refs.push(Some(v));
-            } else {
-                refs.push(None);
-            }
-        }
-
-        // Convert Option<Vec<u8>> to Option<&mut [u8]> via temporary owned buffers.
-        // Ensure all shards have allocated buffers so we can reconstruct missing ones.
+        // Allocate buffers for all shards; mark which were originally present.
         let mut owned: Vec<Vec<u8>> = Vec::with_capacity(total_shards);
-        let mut slice_refs: Vec<Option<&mut [u8]>> = Vec::with_capacity(total_shards);
+        let mut present: Vec<bool> = Vec::with_capacity(total_shards);
 
-        for i in 0..total_shards {
-            match refs[i].take() {
+        for opt in shards_opt.into_iter() {
+            match opt {
                 Some(mut v) => {
                     if v.len() != p.shard_bytes {
                         v.resize(p.shard_bytes, 0);
                     }
                     owned.push(v);
-                    let last = owned.len() - 1;
-                    slice_refs.push(Some(owned[last].as_mut_slice()));
+                    present.push(true);
                 }
                 None => {
                     owned.push(vec![0u8; p.shard_bytes]);
-                    let last = owned.len() - 1;
-                    slice_refs.push(None);
+                    present.push(false);
                 }
+            }
+        }
+
+        // Build refs with stable addresses into `owned`.
+        let mut slice_refs: Vec<Option<&mut [u8]>> = owned.iter_mut().map(|v| Some(v.as_mut_slice())).collect();
+        for (i, was_present) in present.iter().enumerate() {
+            if !*was_present {
+                slice_refs[i] = None;
             }
         }
 
