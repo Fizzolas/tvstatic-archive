@@ -2,11 +2,9 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3e scope (implemented)
+## Increment 3f scope (implemented)
 
-- Store the **full per-shard SHA-256** in the shard header.
-- Add **CRC32** on the shard header to quickly reject corrupted headers.
-- Add a heuristic **auto-detection** of sync+calibration so decode is less brittle.
+- CLI can now optionally encode frames to a Matroska/FFV1 file via FFmpeg.
 
-Erasure coding relies on treating corrupted shards as missing (not as wrong data), so per-shard verification is necessary for robust scanning pipelines. [web:157]
+FFmpeg documents the common workflow of encoding image sequences into Matroska/FFV1 for lossless/archival use, including recommended FFV1 settings like using level 3. [web:60][web:176]
 
