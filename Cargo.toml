@@ -3,4 +3,5 @@ resolver = "2"
 members = [
   "crates/sllv-core",
   "crates/sllv-cli",
+  "apps/sllv-desktop/src-tauri",
 ]
