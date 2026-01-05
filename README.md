@@ -15,5 +15,6 @@ This repo implements two profiles:
 - ✅ Increment 2a/2b/2c: desktop GUI (Tauri) usable with pickers + progress
 - ✅ Increment 3a (Android): usable encode/decode via SAF staging + JNI calling Rust
 - ✅ Increment 3b: sync slate + calibration frame prepended to every encode
-- ⏭️ Next: fiducials/borders + nearest-color classification; then video-first workflows
+- ✅ Increment 3c: borders + nearest-palette decode (capture tolerance)
+- ⏭️ Next: real fiducials + automatic sync detection + RS/fountain ECC + video-first decode
 

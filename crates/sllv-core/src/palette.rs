@@ -44,19 +44,35 @@ impl Palette8 {
         Ok(c)
     }
 
-    pub fn symbol_from_rgb(&self, r: u8, g: u8, b: u8) -> u8 {
-        // Exact matching for Increment 1a (lossless pipeline).
-        // Later increments will use nearest-color classification for camera scanning.
+    pub fn symbol_from_rgb_exact(&self, r: u8, g: u8, b: u8) -> Option<u8> {
         match (r, g, b) {
-            (0, 0, 0) => 0,
-            (255, 255, 255) => 1,
-            (255, 0, 0) => 2,
-            (0, 255, 0) => 3,
-            (0, 0, 255) => 4,
-            (0, 255, 255) => 5,
-            (255, 0, 255) => 6,
-            (255, 255, 0) => 7,
-            _ => 0, // fallback; will be improved later
+            (0, 0, 0) => Some(0),
+            (255, 255, 255) => Some(1),
+            (255, 0, 0) => Some(2),
+            (0, 255, 0) => Some(3),
+            (0, 0, 255) => Some(4),
+            (0, 255, 255) => Some(5),
+            (255, 0, 255) => Some(6),
+            (255, 255, 0) => Some(7),
+            _ => None,
         }
+    }
+
+    pub fn symbol_from_rgb_nearest(&self, r: u8, g: u8, b: u8) -> u8 {
+        // Euclidean in RGB for now. Later increments can switch to a perceptual space.
+        let mut best = 0u8;
+        let mut best_d = u32::MAX;
+        for sym in 0u8..8u8 {
+            let c = self.color(sym).unwrap();
+            let dr = (c.r as i32 - r as i32) as i32;
+            let dg = (c.g as i32 - g as i32) as i32;
+            let db = (c.b as i32 - b as i32) as i32;
+            let d = (dr * dr + dg * dg + db * db) as u32;
+            if d < best_d {
+                best_d = d;
+                best = sym;
+            }
+        }
+        best
     }
 }

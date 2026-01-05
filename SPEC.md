@@ -9,25 +9,20 @@
   - Video file on disk (exact pixels possible with lossless codecs).
   - Live camera capture of a playing video (drop/blur tolerant).
 
-## Increment 3b scope (implemented)
+## Increment 3c scope (implemented)
 
-- Add a **sync slate** (solid color frames) at the start of every encode.
-- Add a **calibration frame** after the sync slate containing a palette strip and a checkerboard.
+- Add a border around every frame (black/white checker) to help future camera detection/deskew.
+- Switch decode from exact RGB equality to **nearest-palette** classification to tolerate non-perfect capture.
 
-This aligns with the overall goal of camera scanning, where exposure/white balance and palette classification matter. Color calibration/white balance tools exist specifically to stabilize color under varying lighting/cameras, and the calibration frame is an in-band analog of that idea. [web:145]
+Fiducial systems (e.g., AprilTag) exist specifically to make visual detection robust under perspective and noise, and this border is a simple first step toward that kind of robustness. [web:139][web:142]
 
-## High-level pipeline
-
-1. Input path is packaged into a single `tar` byte stream.
-2. Data is chunked into fixed-size payloads.
-3. A fixed number of sync/calibration frames are prepended.
-4. Each payload chunk becomes one data frame.
-
-> Note: Fountain codes + stronger ECC are planned for later increments.
-
-## Frame structure (Increment 3b)
+## Frame structure (Increment 3c)
 
 - Segment 0: Sync slate (default 30 frames)
 - Segment 1: Calibration (default 1 frame)
 - Segment 2: Data frames
+
+Each frame now has:
+- Outer border region (checker pattern)
+- Inner payload region (colored cells)
 
