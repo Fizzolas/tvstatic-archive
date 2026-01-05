@@ -12,12 +12,10 @@ impl eframe::App for AppState {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.tab {
-                Tab::Encode => ui_encode(ui, self),
-                Tab::Decode => ui_decode(ui, self),
-                Tab::Doctor => ui_doctor(ui, self),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::Encode => ui_encode(ui, self),
+            Tab::Decode => ui_decode(ui, self),
+            Tab::Doctor => ui_doctor(ui, self),
         });
 
         egui::TopBottomPanel::bottom("log").resizable(true).show(ctx, |ui| {
@@ -61,7 +59,11 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut p, 0, "Archive");
                 ui.selectable_value(&mut p, 1, "Scan");
             });
-        let new_profile = if p == 0 { sllv_core::Profile::Archive } else { sllv_core::Profile::Scan };
+        let new_profile = if p == 0 {
+            sllv_core::Profile::Archive
+        } else {
+            sllv_core::Profile::Scan
+        };
         if new_profile.name() != state.encode.profile.name() {
             state.encode.profile = new_profile;
             state.encode.rp = new_profile.defaults();
@@ -70,14 +72,35 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    ui.label(format!("Input: {}", state.encode.input.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(not set)".into())));
-    if ui.button("Choose input file/folder").clicked() {
-        if let Some(path) = rfd::FileDialog::new().pick_path() {
+    ui.label(format!(
+        "Input: {}",
+        state
+            .encode
+            .input
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(not set)".into())
+    ));
+    if ui.button("Choose input file").clicked() {
+        if let Some(path) = rfd::FileDialog::new().pick_file() {
+            state.encode.input = Some(path);
+        }
+    }
+    if ui.button("Choose input folder").clicked() {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
             state.encode.input = Some(path);
         }
     }
 
-    ui.label(format!("Output frames dir: {}", state.encode.out_frames.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(not set)".into())));
+    ui.label(format!(
+        "Output frames dir: {}",
+        state
+            .encode
+            .out_frames
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(not set)".into())
+    ));
     if ui.button("Choose output frames folder").clicked() {
         if let Some(path) = rfd::FileDialog::new().pick_folder() {
             state.encode.out_frames = Some(path);
@@ -108,7 +131,6 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.encode.rp.deskew, "Enable");
         });
 
-        // Only show FEC knobs if the profile uses it.
         if let Some(ref mut fec) = state.encode.rp.fec {
             ui.separator();
             ui.horizontal(|ui| {
@@ -133,7 +155,15 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 
     ui.collapsing("MKV / FFmpeg (optional)", |ui| {
-        ui.label(format!("Output MKV: {}", state.encode.out_mkv.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(disabled)".into())));
+        ui.label(format!(
+            "Output MKV: {}",
+            state
+                .encode
+                .out_mkv
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(disabled)".into())
+        ));
         ui.horizontal(|ui| {
             if ui.button("Choose MKV output").clicked() {
                 state.encode.out_mkv = rfd::FileDialog::new().add_filter("Matroska", &["mkv"]).save_file();
@@ -152,7 +182,14 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal(|ui| {
             ui.label("FFmpeg path");
             help_button(ui, state, HelpTopic::Ffmpeg);
-            ui.label(state.encode.ffmpeg_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(PATH)".into()));
+            ui.label(
+                state
+                    .encode
+                    .ffmpeg_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(PATH)".into()),
+            );
             if ui.button("Choose ffmpeg.exe").clicked() {
                 state.encode.ffmpeg_path = rfd::FileDialog::new().add_filter("ffmpeg", &["exe"]).pick_file();
             }
@@ -188,7 +225,11 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut p, 0, "Archive");
                 ui.selectable_value(&mut p, 1, "Scan");
             });
-        let new_profile = if p == 0 { sllv_core::Profile::Archive } else { sllv_core::Profile::Scan };
+        let new_profile = if p == 0 {
+            sllv_core::Profile::Archive
+        } else {
+            sllv_core::Profile::Scan
+        };
         if new_profile.name() != state.decode.profile.name() {
             state.decode.profile = new_profile;
             state.decode.rp = new_profile.defaults();
@@ -198,12 +239,28 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 
     ui.collapsing("Input (choose one)", |ui| {
-        ui.label(format!("Frames folder: {}", state.decode.input_frames.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(not set)".into())));
+        ui.label(format!(
+            "Frames folder: {}",
+            state
+                .decode
+                .input_frames
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(not set)".into())
+        ));
         if ui.button("Choose frames folder").clicked() {
             state.decode.input_frames = rfd::FileDialog::new().pick_folder();
         }
 
-        ui.label(format!("MKV file: {}", state.decode.input_mkv.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(not set)".into())));
+        ui.label(format!(
+            "MKV file: {}",
+            state
+                .decode
+                .input_mkv
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(not set)".into())
+        ));
         if ui.button("Choose MKV file").clicked() {
             state.decode.input_mkv = rfd::FileDialog::new().add_filter("Matroska", &["mkv"]).pick_file();
         }
@@ -218,7 +275,15 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    ui.label(format!("Output tar: {}", state.decode.out_tar.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(not set)".into())));
+    ui.label(format!(
+        "Output tar: {}",
+        state
+            .decode
+            .out_tar
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(not set)".into())
+    ));
     if ui.button("Choose output .tar").clicked() {
         state.decode.out_tar = rfd::FileDialog::new().add_filter("tar", &["tar"]).save_file();
     }
@@ -247,24 +312,29 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.decode.rp.deskew, "Enable");
         });
 
-        if let Some(ref mut fec) = state.decode.rp.fec {
+        // Fix E0499: don't hold a mutable borrow of `fec` across closures that also need `&mut state`.
+        let show_fec = state.decode.rp.fec.is_some();
+        if show_fec {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Error correction (FEC)");
                 help_button(ui, state, HelpTopic::Fec);
             });
-            ui.horizontal(|ui| {
-                ui.label("Data shards");
-                ui.add(egui::DragValue::new(&mut fec.data_shards).clamp_range(1..=64));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Parity shards");
-                ui.add(egui::DragValue::new(&mut fec.parity_shards).clamp_range(0..=64));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Shard bytes");
-                ui.add(egui::DragValue::new(&mut fec.shard_bytes).clamp_range(64..=4096));
-            });
+
+            if let Some(ref mut fec) = state.decode.rp.fec {
+                ui.horizontal(|ui| {
+                    ui.label("Data shards");
+                    ui.add(egui::DragValue::new(&mut fec.data_shards).clamp_range(1..=64));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Parity shards");
+                    ui.add(egui::DragValue::new(&mut fec.parity_shards).clamp_range(0..=64));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Shard bytes");
+                    ui.add(egui::DragValue::new(&mut fec.shard_bytes).clamp_range(64..=4096));
+                });
+            }
         }
     });
 
@@ -274,7 +344,14 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal(|ui| {
             ui.label("FFmpeg path");
             help_button(ui, state, HelpTopic::Ffmpeg);
-            ui.label(state.decode.ffmpeg_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(PATH)".into()));
+            ui.label(
+                state
+                    .decode
+                    .ffmpeg_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(PATH)".into()),
+            );
             if ui.button("Choose ffmpeg.exe").clicked() {
                 state.decode.ffmpeg_path = rfd::FileDialog::new().add_filter("ffmpeg", &["exe"]).pick_file();
             }
@@ -307,7 +384,6 @@ fn ui_doctor(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 fn run_doctor() -> anyhow::Result<String> {
-    // Keep GUI doctor independent from spawning the CLI.
     let tmp = std::env::temp_dir().join("sllv_doctor_write_test.tmp");
     std::fs::write(&tmp, b"ok")?;
     std::fs::remove_file(&tmp).ok();
@@ -322,11 +398,7 @@ fn run_encode(state: &mut AppState) -> anyhow::Result<()> {
 
     sllv_core::raster::encode_bytes_to_frames_dir(&tar, &name, out_frames, &state.encode.rp)?;
 
-    if let Some(out_mkv) = state.encode.out_mkv.as_ref() {
-        // Reuse the CLI ffmpeg wrapper to avoid code duplication.
-        // (We call into the same module file by path, but easiest is to spawn ffmpeg ourselves here later.)
-        // For now, just warn in log if mkv requested.
-        // TODO: move ffmpeg wrapper to sllv-core or a shared crate.
+    if state.encode.out_mkv.is_some() {
         return Err(anyhow::anyhow!(
             "MKV output not wired in GUI yet. Use CLI for MKV or wait for next patch."
         ));
