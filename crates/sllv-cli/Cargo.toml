@@ -1,7 +1,12 @@
 [package]
 name = "sllv-cli"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+serde_json = "1"
+
 sllv-core = { path = "../sllv-core" }

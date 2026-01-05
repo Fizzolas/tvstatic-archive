@@ -9,56 +9,36 @@
   - Video file on disk (exact pixels possible with lossless codecs).
   - Live camera capture of a playing video (drop/blur tolerant).
 
+## Increment 1a scope (implemented)
+
+- Deterministic file → numbered PNG frames → file round-trip.
+- Optional FFmpeg wrapper to create a lossless Matroska/FFV1 video from frames.
+
 ## High-level pipeline
 
-1. Input file or folder is packaged (optionally) as an archive.
-2. Data is chunked into fixed-size source blocks.
-3. Blocks are protected with an outer erasure layer (fountain/LT-style) so missing frames are OK.
-4. Encoded symbols are mapped into per-frame grids of colored cells plus sync/metadata.
+1. Input file is read as bytes.
+2. Data is chunked into fixed-size payloads.
+3. Each chunk becomes one frame.
+4. Each frame is a grid of colored cells representing 3-bit symbols.
 
-## Video structure
+> Note: Fountain codes + stronger ECC are planned for later increments.
 
-### Segment 0: Sync slate
+## Frame structure (Increment 1a)
 
-- First N frames are a solid color slate (configurable) to let camera decoders lock exposure/focus.
+- The output image is a square lattice of cells.
+- The payload area is currently the full grid (fiducials/borders will be added next).
 
-### Segment 1: Calibration
+### Parameters
 
-- One or more frames include a color calibration strip (known palette) used to estimate color mapping.
+- `grid_w`, `grid_h`: number of data cells.
+- `cell_px`: pixel size of each cell.
+- `palette`: 8 fixed RGB colors.
+- `payload_bits_per_cell`: 3
 
-### Segment 2: Data frames
+## Container fields (frame directory)
 
-Each data frame contains:
+The encoder writes:
 
-- 4 corner fiducials (for detection + orientation)
-- timing border(s)
-- metadata header cells
-- payload grid
-
-## Cell alphabet (initial)
-
-- Start with 8-color palette (3 bits/cell) chosen for maximal separation.
-- Decoder must support an "unknown" state for ambiguous samples.
-
-## Container fields (draft)
-
-- magic: "SLLV"
-- version: u16
-- profile: enum { archive, scan }
-- frame_w, frame_h: u16
-- grid_w, grid_h: u16
-- palette_id: u16
-- chunk_bytes: u32
-- total_bytes: u64
-- root_hash: 32 bytes (sha256)
-- header_crc: u32
-
-## Notes
-
-This is intentionally a draft. The next increment will freeze:
-
-- exact fiducial geometry
-- palette values
-- metadata encoding
-- ECC parameters
+- `manifest.json`: format metadata + chunk sizes + total bytes + sha256.
+- `frame_000000.png` ... `frame_N.png`: payload frames.
 
