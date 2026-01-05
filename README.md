@@ -2,83 +2,43 @@
 
 SLLV turns files/folders into a sequence of “TV static” frames (or an optional lossless video) and can recover the original bytes later.
 
-## Install (no coding required)
+## Install (Windows)
 
-Right now there are **no prebuilt downloads** in this repo.
+If you downloaded the ZIP, the easiest path is the Windows setup script:
 
-To use SLLV today, you download the ZIP and run one of the build scripts below. These scripts build a standalone `sllv.exe` you can run.
+- `scripts\setup-windows.ps1`
 
-### Windows
+### Fastest way
 
-1) Install Rust (this installs the `cargo` command):
-   - https://www.rust-lang.org/tools/install
+1) Right-click the repo folder → “Open in Terminal”.
+2) Run:
 
-2) Download this repo as a ZIP and unzip it.
-
-3) Run one of these:
-
-- `scripts\build.bat` (Command Prompt)
-- `scripts\build.ps1` (PowerShell)
-
-When the build finishes, you will have:
-
-- `dist\sllv.exe`
-
-Then run:
-
-```bat
-dist\sllv.exe doctor
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 ```
 
-### macOS / Linux
+If Rust isn’t installed yet, run with auto-install:
 
-1) Install Rust:
-   - https://www.rust-lang.org/tools/install
-
-2) In a terminal:
-
-```bash
-./scripts/build.sh
-./dist/sllv doctor
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -AutoInstall
 ```
 
-## What it does
+This will:
 
-- Packs your input (file or folder) into a tar archive.
-- Encodes bytes into color-cell frames (8-color palette, 3 bits per cell).
-- Optional: wraps frames into Matroska/FFV1 for lossless archival storage (needs ffmpeg).
-- Decodes frames (or MKV) back into the original tar bytes.
+- Install Rust (via winget) if missing. [web:354]
+- Optionally install Visual Studio Build Tools (C++ workload) if needed. [web:361][web:370]
+- Build `dist\sllv.exe`
+- Run `dist\sllv.exe doctor`
 
-## Quick commands
+## Install (macOS / Linux)
 
-Encode (Archive profile):
-
-```bash
-./dist/sllv encode --profile archive --input ./my_folder --out-frames ./frames --out-mkv ./out.mkv --fps 24
-```
-
-Encode (Scan profile):
-
-```bash
-./dist/sllv encode --profile scan --input ./my_folder --out-frames ./frames_scan --fps 12
-```
-
-Decode:
-
-```bash
-./dist/sllv decode --profile scan --input-frames ./frames_scan --out-tar ./recovered.tar
-```
+Use `./scripts/build.sh` (requires Rust installed).
 
 ## FFmpeg (only for MKV)
 
 FFmpeg is only needed when you use `--out-mkv` or `--input-mkv`.
 
-If ffmpeg isn’t on PATH, pass it explicitly:
-
-```bash
-./dist/sllv encode ... --ffmpeg-path C:\\path\\to\\ffmpeg.exe
-./dist/sllv decode ... --ffmpeg-path C:\\path\\to\\ffmpeg.exe
-```
+If ffmpeg isn’t on PATH, pass `--ffmpeg-path`.
 
 FFV1 in Matroska is commonly used for lossless/archival workflows. [web:60]
 
