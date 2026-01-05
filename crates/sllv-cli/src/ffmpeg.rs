@@ -10,8 +10,6 @@ use std::process::Command;
 pub fn frames_to_ffv1_mkv(frames_dir: &Path, out_mkv: &Path, fps: u32) -> anyhow::Result<()> {
     let input_pattern = frames_dir.join("frame_%06d.png");
 
-    // Use FFV1 with level 3 (widely recommended for production).
-    // Keep pix_fmt rgb24 since our frames are synthetic RGB.
     let status = Command::new("ffmpeg")
         .arg("-y")
         .arg("-f")
@@ -27,6 +25,34 @@ pub fn frames_to_ffv1_mkv(frames_dir: &Path, out_mkv: &Path, fps: u32) -> anyhow
         .arg("-pix_fmt")
         .arg("rgb24")
         .arg(out_mkv)
+        .status()
+        .context("spawn ffmpeg")?;
+
+    if !status.success() {
+        bail!("ffmpeg failed: {status}");
+    }
+
+    Ok(())
+}
+
+/// Extract `frame_%06d.png` into `out_frames_dir` from a video file.
+///
+/// Uses ffmpeg `-vsync 0` to avoid frame duplication and `-start_number 0` to match our naming.
+/// The ffmpeg docs describe `-vsync` behavior and image output patterns. [web:173]
+pub fn mkv_to_frames(in_video: &Path, out_frames_dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(out_frames_dir).context("create out frames dir")?;
+
+    let out_pattern = out_frames_dir.join("frame_%06d.png");
+
+    let status = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i")
+        .arg(in_video)
+        .arg("-vsync")
+        .arg("0")
+        .arg("-start_number")
+        .arg("0")
+        .arg(out_pattern)
         .status()
         .context("spawn ffmpeg")?;
 

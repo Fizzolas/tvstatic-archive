@@ -2,9 +2,9 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3f scope (implemented)
+## Increment 3g scope (implemented)
 
-- CLI can now optionally encode frames to a Matroska/FFV1 file via FFmpeg.
+- CLI can now decode directly from a MKV by extracting a numbered PNG frame sequence with FFmpeg.
 
-FFmpeg documents the common workflow of encoding image sequences into Matroska/FFV1 for lossless/archival use, including recommended FFV1 settings like using level 3. [web:60][web:176]
+FFmpeg documents options like `-vsync` for controlling frame duplication/dropping during extraction, which matters when treating video frames as discrete packets. [web:173]
 

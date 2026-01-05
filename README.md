@@ -15,7 +15,13 @@ Encode to frames + MKV (FFV1):
 sllv encode --input ./my_folder --out-frames ./frames --out-mkv ./out.mkv --fps 24
 ```
 
-This uses FFmpeg's common pattern for encoding an image sequence to Matroska/FFV1. [web:60][web:176]
+Decode from MKV (extract frames then decode):
+
+```bash
+sllv decode --input-mkv ./out.mkv --out-tar ./recovered.tar
+```
+
+This uses ffmpeg's documented image sequence extraction and sync options. [web:173]
 
 Decode from frames:
 
@@ -32,6 +38,6 @@ sllv decode --input-frames ./frames --out-tar ./recovered.tar
 - ✅ Increment 3a (Android): usable encode/decode via SAF staging + JNI calling Rust
 - ✅ Increment 3b/3c: sync+calibration + border + nearest-palette decode
 - ✅ Increment 3d/3e: RS shards + per-shard hash + auto-detect
-- ✅ Increment 3f: CLI can optionally emit FFV1/MKV directly from frame sequences
-- ⏭️ Next: real fiducials + video-file decode (extract frames) + scan-profile presets
+- ✅ Increment 3f/3g: CLI encode/decode supports MKV via ffmpeg
+- ⏭️ Next: fiducials + camera pipeline + GUI scan-profile presets
 
