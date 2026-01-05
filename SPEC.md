@@ -2,9 +2,13 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3h scope (implemented)
+## Increment 3i (part 1) scope (implemented)
 
-- Add simple **corner fiducials** (colored L-shapes) inside the border.
+- Add a pure-Rust homography + warp module.
 
-Fiducial designs like AprilTag are built to stay detectable under perspective distortion and noise; while these L-shapes are much simpler than AprilTag, they’re meant to provide orientation/corner hints for the next step (homography + deskew). [web:142]
+This follows the same conceptual approach used in standard computer vision pipelines: compute a homography and apply a perspective warp (e.g., OpenCV `warpPerspective`). [web:215][web:258]
+
+## Next
+
+Wire this into the decoder: detect the four corner fiducials in an incoming (camera) frame, warp to canonical grid, then classify symbols.
 
