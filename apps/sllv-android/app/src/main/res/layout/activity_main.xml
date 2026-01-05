@@ -9,7 +9,7 @@
         android:id="@+id/title"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="SLLV Android (Increment 3a)"
+        android:text="SLLV Android"
         android:textSize="20sp"
         android:textStyle="bold" />
 
@@ -42,7 +42,7 @@
         android:id="@+id/btnPickFramesOut"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Pick output frames folder" />
+        android:text="Pick output frames folder (later)" />
 
     <Button
         android:id="@+id/btnEncode"
