@@ -131,24 +131,29 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.encode.rp.deskew, "Enable");
         });
 
-        if let Some(ref mut fec) = state.encode.rp.fec {
+        // Fix E0499: render FEC header (needs &mut state for help_button) without holding `ref mut fec`.
+        let show_fec = state.encode.rp.fec.is_some();
+        if show_fec {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Error correction (FEC)");
                 help_button(ui, state, HelpTopic::Fec);
             });
-            ui.horizontal(|ui| {
-                ui.label("Data shards");
-                ui.add(egui::DragValue::new(&mut fec.data_shards).clamp_range(1..=64));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Parity shards");
-                ui.add(egui::DragValue::new(&mut fec.parity_shards).clamp_range(0..=64));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Shard bytes");
-                ui.add(egui::DragValue::new(&mut fec.shard_bytes).clamp_range(64..=4096));
-            });
+
+            if let Some(ref mut fec) = state.encode.rp.fec {
+                ui.horizontal(|ui| {
+                    ui.label("Data shards");
+                    ui.add(egui::DragValue::new(&mut fec.data_shards).clamp_range(1..=64));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Parity shards");
+                    ui.add(egui::DragValue::new(&mut fec.parity_shards).clamp_range(0..=64));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Shard bytes");
+                    ui.add(egui::DragValue::new(&mut fec.shard_bytes).clamp_range(64..=4096));
+                });
+            }
         }
     });
 
@@ -312,7 +317,6 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.decode.rp.deskew, "Enable");
         });
 
-        // Fix E0499: don't hold a mutable borrow of `fec` across closures that also need `&mut state`.
         let show_fec = state.decode.rp.fec.is_some();
         if show_fec {
             ui.separator();
@@ -395,7 +399,6 @@ fn run_encode(state: &mut AppState) -> anyhow::Result<()> {
     let out_frames = state.encode.out_frames.as_ref().ok_or_else(|| anyhow::anyhow!("Output frames folder not set"))?;
 
     let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(input)?;
-
     sllv_core::raster::encode_bytes_to_frames_dir(&tar, &name, out_frames, &state.encode.rp)?;
 
     if state.encode.out_mkv.is_some() {
