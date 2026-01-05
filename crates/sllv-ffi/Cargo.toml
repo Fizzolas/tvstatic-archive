@@ -1,0 +1,14 @@
+[package]
+name = "sllv-ffi"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+sllv-core = { path = "../sllv-core" }
+
+# This will be used for Android bindings in upcoming increments.
+# We are intentionally keeping it minimal for now.

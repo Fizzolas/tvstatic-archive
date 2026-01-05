@@ -4,4 +4,5 @@ members = [
   "crates/sllv-core",
   "crates/sllv-cli",
   "apps/sllv-desktop/src-tauri",
+  "crates/sllv-ffi",
 ]
