@@ -3,12 +3,11 @@ resolver = "2"
 
 members = [
   "crates/sllv-core",
-  "crates/sllv-cli"
+  "crates/sllv-cli",
+  "crates/sllv-gui",
 ]
 
-# Distribution-oriented profile.
-# Using LTO improves the chance of a smaller single-binary CLI.
 [profile.release]
+strip = true
 lto = true
 codegen-units = 1
-strip = true

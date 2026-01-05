@@ -1,46 +1,27 @@
 # SLLV — Static Lattice Video Codec
 
-SLLV turns files/folders into a sequence of “TV static” frames (or an optional lossless video) and can recover the original bytes later.
+SLLV turns files/folders into a sequence of “TV static” frames and can recover the original bytes later.
 
-## Install (Windows)
+## Windows: you will get two apps
 
-If you downloaded the ZIP, the easiest path is the Windows setup script:
+After setup/build, you will have:
 
-- `scripts\setup-windows.ps1`
+- `dist\sllv.exe` — CLI (full control)
+- `dist\sllv-gui.exe` — GUI (double-click friendly)
 
-### Fastest way
+## Windows setup (ZIP download)
 
-1) Right-click the repo folder → “Open in Terminal”.
-2) Run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
-```
-
-If Rust isn’t installed yet, run with auto-install:
+Run this (PowerShell):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1 -AutoInstall
 ```
 
-This will:
+Then double-click `dist\sllv-gui.exe`.
 
-- Install Rust (via winget) if missing. [web:354]
-- Optionally install Visual Studio Build Tools (C++ workload) if needed. [web:361][web:370]
-- Build `dist\sllv.exe`
-- Run `dist\sllv.exe doctor`
+## Notes
 
-## Install (macOS / Linux)
-
-Use `./scripts/build.sh` (requires Rust installed).
-
-## FFmpeg (only for MKV)
-
-FFmpeg is only needed when you use `--out-mkv` or `--input-mkv`.
-
-If ffmpeg isn’t on PATH, pass `--ffmpeg-path`.
-
-FFV1 in Matroska is commonly used for lossless/archival workflows. [web:60]
+The GUI exposes only settings that are safe (they won't silently corrupt interpretation), but anything that must match between encode/decode is grouped under “Safe settings (keep consistent for decode)”.
 
 ## Changelog
 
