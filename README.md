@@ -31,6 +31,14 @@ scripts\build.bat
 
 Binaries will be placed in `dist/`.
 
+### Quick sanity check
+
+```bash
+./dist/sllv doctor
+# If you plan to use MKV/FFV1:
+./dist/sllv doctor --check-ffmpeg
+```
+
 ### CLI usage
 
 Encode:
@@ -52,6 +60,17 @@ Decode:
 # decode from frames dir
 ./dist/sllv decode --profile scan --input-frames ./frames_scan --out-tar ./recovered.tar
 ```
+
+### FFmpeg notes
+
+If ffmpeg isn't on PATH, pass it explicitly:
+
+```bash
+./dist/sllv encode ... --ffmpeg-path /path/to/ffmpeg
+./dist/sllv decode ... --ffmpeg-path /path/to/ffmpeg
+```
+
+FFV1 in Matroska is commonly used for lossless/archival workflows. [web:60]
 
 ## Installers / packages
 
