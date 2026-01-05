@@ -1,7 +1,8 @@
 use crate::fec::{fec_decode_collect, fec_encode_stream, FecParams, ShardPacket};
 use crate::manifest::EncodeManifest;
 use crate::palette::{Palette8, Rgb8};
-use image::{ImageBuffer, Rgb};
+use crate::warp::{homography_from_4, warp_perspective_nearest, Pt2};
+use image::Rgb;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -17,19 +18,18 @@ pub struct RasterParams {
     pub chunk_bytes: u32,
     pub palette: Palette8,
 
-    // Sync/calibration
     pub sync_frames: u32,
     pub sync_color_symbol: u8,
     pub calibration_frames: u32,
 
-    // Borders
     pub border_cells: u32,
 
-    // Fiducials
     pub fiducial_size_cells: u32,
 
-    // FEC
     pub fec: Option<FecParams>,
+
+    // Decode pre-processing
+    pub deskew: bool,
 }
 
 impl Default for RasterParams {
@@ -50,6 +50,8 @@ impl Default for RasterParams {
             fiducial_size_cells: 12,
 
             fec: Some(FecParams::default()),
+
+            deskew: true,
         }
     }
 }
@@ -84,7 +86,6 @@ pub fn encode_bytes_to_frames_dir(
     hasher.update(input_bytes);
     let sha256_hex = hex::encode(hasher.finalize());
 
-    // 1) Sync + calibration
     for i in 0..p.sync_frames {
         render_solid_frame(p, p.sync_color_symbol)?.save(out_dir.join(format!("frame_{:06}.png", i)))?;
     }
@@ -93,7 +94,6 @@ pub fn encode_bytes_to_frames_dir(
         render_calibration_frame(p)?.save(out_dir.join(format!("frame_{:06}.png", idx)))?;
     }
 
-    // 2) Determine payload capacity
     let payload_cells = (p.grid_w as usize) * (p.grid_h as usize);
     let payload_bits = payload_cells * 3;
     let payload_bytes_capacity = (payload_bits / 8) as u32;
@@ -165,6 +165,7 @@ pub fn encode_bytes_to_frames_dir(
             "data_frames": frames_written,
             "border_cells": p.border_cells,
             "fiducial_size_cells": p.fiducial_size_cells,
+            "deskew": p.deskew,
             "fec": {
               "data_shards": fecp.data_shards,
               "parity_shards": fecp.parity_shards,
@@ -223,7 +224,8 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 
         for i in start_index..manifest.frames {
             let path = in_dir.join(format!("frame_{:06}.png", i));
-            let bytes = decode_payload_frame_bytes(&path, &manifest, &p, palette)?;
+            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, &p, palette)?;
+
             if bytes.len() < ShardHeader::BYTES {
                 continue;
             }
@@ -243,7 +245,6 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 
             let shard = bytes[ShardHeader::BYTES..shard_end].to_vec();
 
-            // Verify shard hash; if mismatch, drop (treat as missing).
             let mut h = Sha256::new();
             h.update(&shard);
             let sha: [u8; 32] = h.finalize().into();
@@ -273,7 +274,7 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
         let mut out = Vec::with_capacity(manifest.total_bytes as usize);
         for i in start_index..manifest.frames {
             let path = in_dir.join(format!("frame_{:06}.png", i));
-            let bytes = decode_payload_frame_bytes(&path, &manifest, &p, palette)?;
+            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, &p, palette)?;
             out.extend_from_slice(&bytes);
         }
         out.truncate(manifest.total_bytes as usize);
@@ -285,6 +286,156 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
         }
         Ok(out)
     }
+}
+
+fn decode_frame_bytes_with_optional_deskew(
+    path: &Path,
+    m: &EncodeManifest,
+    p: &RasterParams,
+    palette: Palette8,
+) -> Result<Vec<u8>, RasterError> {
+    let dyn_img = image::open(path)?;
+    let img = dyn_img.to_rgb8();
+
+    let payload_img = if p.deskew {
+        if let Some(warped) = deskew_with_fiducials(&img, m, p, palette) {
+            warped
+        } else {
+            img
+        }
+    } else {
+        img
+    };
+
+    decode_payload_from_rgb(&payload_img, m, p, palette)
+}
+
+fn deskew_with_fiducials(
+    img: &image::ImageBuffer<Rgb<u8>, Vec<u8>>,
+    m: &EncodeManifest,
+    p: &RasterParams,
+    palette: Palette8,
+) -> Option<image::ImageBuffer<Rgb<u8>, Vec<u8>>> {
+    // Detect each corner by scanning a window near that corner and finding pixels
+    // closest to the expected fiducial symbol.
+
+    let w = img.width();
+    let h = img.height();
+
+    let win = (p.fiducial_size_cells * p.cell_px * 3).min(w.min(h) / 2).max(32);
+
+    let tl = find_color_centroid(img, 0, 0, win, win, 2, palette)?; // red
+    let tr = find_color_centroid(img, w - win, 0, win, win, 3, palette)?; // green
+    let bl = find_color_centroid(img, 0, h - win, win, win, 4, palette)?; // blue
+    let br = find_color_centroid(img, w - win, h - win, win, win, 7, palette)?; // yellow
+
+    // Destination: full canonical frame pixel dimensions (including border).
+    let dst_w = (m.grid_w + 2 * p.border_cells) * m.cell_px;
+    let dst_h = (m.grid_h + 2 * p.border_cells) * m.cell_px;
+
+    let src_pts = [
+        Pt2 { x: tl.x as f64, y: tl.y as f64 },
+        Pt2 { x: tr.x as f64, y: tr.y as f64 },
+        Pt2 { x: br.x as f64, y: br.y as f64 },
+        Pt2 { x: bl.x as f64, y: bl.y as f64 },
+    ];
+
+    let dst_pts = [
+        Pt2 { x: 0.0, y: 0.0 },
+        Pt2 { x: (dst_w - 1) as f64, y: 0.0 },
+        Pt2 { x: (dst_w - 1) as f64, y: (dst_h - 1) as f64 },
+        Pt2 { x: 0.0, y: (dst_h - 1) as f64 },
+    ];
+
+    let hmat = homography_from_4(src_pts, dst_pts).ok()?;
+    let warped = warp_perspective_nearest(img, &hmat, dst_w, dst_h).ok()?;
+
+    Some(warped)
+}
+
+#[derive(Clone, Copy)]
+struct CxCy {
+    x: u32,
+    y: u32,
+}
+
+fn find_color_centroid(
+    img: &image::ImageBuffer<Rgb<u8>, Vec<u8>>,
+    x0: u32,
+    y0: u32,
+    w: u32,
+    h: u32,
+    expected_symbol: u8,
+    palette: Palette8,
+) -> Option<CxCy> {
+    let expected = palette.color(expected_symbol).ok()?;
+
+    let mut sum_x = 0u64;
+    let mut sum_y = 0u64;
+    let mut n = 0u64;
+
+    for y in y0..(y0 + h) {
+        for x in x0..(x0 + w) {
+            let p0 = img.get_pixel(x, y);
+            let d = rgb_dist2(p0[0], p0[1], p0[2], expected.r, expected.g, expected.b);
+            // loose threshold: allow quite a bit of camera drift
+            if d < 60_000 {
+                sum_x += x as u64;
+                sum_y += y as u64;
+                n += 1;
+            }
+        }
+    }
+
+    if n < 50 {
+        return None;
+    }
+
+    Some(CxCy {
+        x: (sum_x / n) as u32,
+        y: (sum_y / n) as u32,
+    })
+}
+
+fn rgb_dist2(r: u8, g: u8, b: u8, rr: u8, gg: u8, bb: u8) -> u32 {
+    let dr = r as i32 - rr as i32;
+    let dg = g as i32 - gg as i32;
+    let db = b as i32 - bb as i32;
+    (dr * dr + dg * dg + db * db) as u32
+}
+
+fn decode_payload_from_rgb(
+    img: &image::ImageBuffer<Rgb<u8>, Vec<u8>>,
+    m: &EncodeManifest,
+    p: &RasterParams,
+    palette: Palette8,
+) -> Result<Vec<u8>, RasterError> {
+    let payload_cells = (m.grid_w as usize) * (m.grid_h as usize);
+    let payload_bits = payload_cells * 3;
+    let payload_bytes = payload_bits / 8;
+
+    let mut payload = vec![0u8; payload_bytes];
+    let mut bit_i = 0usize;
+
+    for y in 0..m.grid_h {
+        for x in 0..m.grid_w {
+            let gx = x + p.border_cells;
+            let gy = y + p.border_cells;
+            let px = gx * m.cell_px;
+            let py = gy * m.cell_px;
+            let p0 = img.get_pixel(px, py);
+
+            let sym = palette.symbol_from_rgb_nearest(p0[0], p0[1], p0[2]);
+            write_3bits(&mut payload, bit_i, sym);
+            bit_i += 3;
+
+            if (bit_i / 8) >= payload.len() {
+                return Ok(payload);
+            }
+        }
+    }
+
+    Ok(payload)
 }
 
 fn detect_data_start(in_dir: &Path, m: &EncodeManifest, p: &RasterParams, palette: Palette8) -> u32 {
@@ -413,13 +564,12 @@ fn full_grid_h(p: &RasterParams) -> u32 {
     p.grid_h + 2 * p.border_cells
 }
 
-fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
+fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
 
-    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
+    let mut img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = image::ImageBuffer::new(w_px, h_px);
 
-    // Checker border.
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
             let in_payload = x >= p.border_cells
@@ -434,10 +584,8 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<
         }
     }
 
-    // Corner fiducials just inside the border.
     draw_corner_fiducials(&mut img, p);
 
-    // Payload
     let mut bit_i = 0usize;
     for y in 0..p.grid_h {
         for x in 0..p.grid_w {
@@ -459,45 +607,34 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<
     Ok(img)
 }
 
-fn draw_corner_fiducials(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, p: &RasterParams) {
-    // Simple high-contrast L-shapes at 4 corners inside border.
-    // Each corner uses a unique color so orientation can be inferred.
-    // This is a lightweight precursor to full ArUco/AprilTag-style fiducials.
-    // AprilTag-style systems are designed for robust detection under perspective and noise. [web:142]
-
+fn draw_corner_fiducials(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, p: &RasterParams) {
     let s = p.fiducial_size_cells;
     let b = p.border_cells;
 
-    // Top-left: red L
     draw_l(img, b, b, s, p.cell_px, 2);
-    // Top-right: green L
     draw_l(img, b + p.grid_w - s, b, s, p.cell_px, 3);
-    // Bottom-left: blue L
     draw_l(img, b, b + p.grid_h - s, s, p.cell_px, 4);
-    // Bottom-right: yellow L
     draw_l(img, b + p.grid_w - s, b + p.grid_h - s, s, p.cell_px, 7);
 }
 
-fn draw_l(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x0: u32, y0: u32, s: u32, cell_px: u32, sym: u8) {
+fn draw_l(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, x0: u32, y0: u32, s: u32, cell_px: u32, sym: u8) {
     let c = Palette8::Basic.color(sym).unwrap();
 
-    // Vertical bar
     for y in y0..(y0 + s) {
         paint_cell(img, x0, y, cell_px, c.r, c.g, c.b);
         paint_cell(img, x0 + 1, y, cell_px, c.r, c.g, c.b);
     }
 
-    // Horizontal bar
     for x in x0..(x0 + s) {
         paint_cell(img, x, y0, cell_px, c.r, c.g, c.b);
         paint_cell(img, x, y0 + 1, cell_px, c.r, c.g, c.b);
     }
 }
 
-fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
+fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
-    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
+    let mut img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = image::ImageBuffer::new(w_px, h_px);
     let Rgb8 { r, g, b } = p.palette.color(symbol).unwrap();
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
@@ -507,12 +644,11 @@ fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<ImageBuffer<Rgb<u8
     Ok(img)
 }
 
-fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
+fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
-    let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
+    let mut img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = image::ImageBuffer::new(w_px, h_px);
 
-    // Border.
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
             let in_payload = x >= p.border_cells
@@ -527,17 +663,14 @@ fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec
         }
     }
 
-    // Fiducials.
     draw_corner_fiducials(&mut img, p);
 
-    // Fill payload with black.
     for y in 0..p.grid_h {
         for x in 0..p.grid_w {
             paint_cell(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, 0, 0, 0);
         }
     }
 
-    // Palette strip at top of payload.
     let block_w = std::cmp::max(1, p.grid_w / 8);
     for sym in 0u8..8u8 {
         let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
@@ -558,7 +691,6 @@ fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec
         }
     }
 
-    // Checkerboard remainder.
     for y in 4..p.grid_h {
         for x in 0..p.grid_w {
             let sym = if ((x ^ y) & 1) == 0 { 1 } else { 0 };
@@ -578,44 +710,7 @@ fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec
     Ok(img)
 }
 
-fn decode_payload_frame_bytes(
-    path: &Path,
-    m: &EncodeManifest,
-    p: &RasterParams,
-    palette: Palette8,
-) -> Result<Vec<u8>, RasterError> {
-    let dyn_img = image::open(path)?;
-    let img = dyn_img.to_rgb8();
-
-    let payload_cells = (m.grid_w as usize) * (m.grid_h as usize);
-    let payload_bits = payload_cells * 3;
-    let payload_bytes = payload_bits / 8;
-
-    let mut payload = vec![0u8; payload_bytes];
-    let mut bit_i = 0usize;
-
-    for y in 0..m.grid_h {
-        for x in 0..m.grid_w {
-            let gx = x + p.border_cells;
-            let gy = y + p.border_cells;
-            let px = gx * m.cell_px;
-            let py = gy * m.cell_px;
-            let p0 = img.get_pixel(px, py);
-
-            let sym = palette.symbol_from_rgb_nearest(p0[0], p0[1], p0[2]);
-            write_3bits(&mut payload, bit_i, sym);
-            bit_i += 3;
-
-            if (bit_i / 8) >= payload.len() {
-                return Ok(payload);
-            }
-        }
-    }
-
-    Ok(payload)
-}
-
-fn paint_cell(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x: u32, y: u32, cell_px: u32, r: u8, g: u8, b: u8) {
+fn paint_cell(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, x: u32, y: u32, cell_px: u32, r: u8, g: u8, b: u8) {
     let x0 = x * cell_px;
     let y0 = y * cell_px;
     for dy in 0..cell_px {
