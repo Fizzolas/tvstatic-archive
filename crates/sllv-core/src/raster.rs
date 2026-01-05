@@ -25,6 +25,9 @@ pub struct RasterParams {
     // Borders
     pub border_cells: u32,
 
+    // Fiducials
+    pub fiducial_size_cells: u32,
+
     // FEC
     pub fec: Option<FecParams>,
 }
@@ -43,6 +46,8 @@ impl Default for RasterParams {
             calibration_frames: 1,
 
             border_cells: 2,
+
+            fiducial_size_cells: 12,
 
             fec: Some(FecParams::default()),
         }
@@ -118,7 +123,7 @@ pub fn encode_bytes_to_frames_dir(
                 shard_len: pkt.shard_bytes.len() as u16,
                 orig_total_bytes: input_bytes.len() as u64,
                 shard_sha256: pkt.shard_sha256,
-                header_crc32: 0, // filled below
+                header_crc32: 0,
             }
             .with_crc();
 
@@ -159,6 +164,7 @@ pub fn encode_bytes_to_frames_dir(
             "calibration_frames": p.calibration_frames,
             "data_frames": frames_written,
             "border_cells": p.border_cells,
+            "fiducial_size_cells": p.fiducial_size_cells,
             "fec": {
               "data_shards": fecp.data_shards,
               "parity_shards": fecp.parity_shards,
@@ -209,8 +215,6 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 
     let palette = Palette8::Basic;
     let p = RasterParams::default();
-
-    // Auto-detect start index by scanning for the first non-solid frame after sync slate.
     let start_index = detect_data_start(in_dir, &manifest, &p, palette);
 
     if let Some(fecp) = &p.fec {
@@ -232,7 +236,21 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
                 orig_total = Some(hdr.orig_total_bytes);
             }
 
-            let shard = bytes[ShardHeader::BYTES..ShardHeader::BYTES + (hdr.shard_len as usize)].to_vec();
+            let shard_end = ShardHeader::BYTES + (hdr.shard_len as usize);
+            if shard_end > bytes.len() {
+                continue;
+            }
+
+            let shard = bytes[ShardHeader::BYTES..shard_end].to_vec();
+
+            // Verify shard hash; if mismatch, drop (treat as missing).
+            let mut h = Sha256::new();
+            h.update(&shard);
+            let sha: [u8; 32] = h.finalize().into();
+            if sha != hdr.shard_sha256 {
+                continue;
+            }
+
             packets.push(ShardPacket {
                 group_index: hdr.group_index,
                 shard_index: hdr.shard_index,
@@ -270,11 +288,7 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 }
 
 fn detect_data_start(in_dir: &Path, m: &EncodeManifest, p: &RasterParams, palette: Palette8) -> u32 {
-    // Heuristic: scan first ~200 frames.
-    // - Sync frames are mostly a single symbol.
-    // - Calibration frame contains multiple palette colors in the payload.
-    // First frame after calibration becomes the data start.
-    let limit = std::cmp::min(m.frames, 200);
+    let limit = std::cmp::min(m.frames, 300);
     let mut saw_cal = false;
 
     for i in 0..limit {
@@ -282,20 +296,17 @@ fn detect_data_start(in_dir: &Path, m: &EncodeManifest, p: &RasterParams, palett
         let Ok(stats) = frame_symbol_stats(&path, m, p, palette) else { continue };
 
         if stats.unique_symbols <= 1 {
-            continue; // likely sync
+            continue;
         }
 
-        // First "rich" frame is treated as calibration.
         if !saw_cal {
             saw_cal = true;
             continue;
         }
 
-        // First frame after calibration.
         return i;
     }
 
-    // fallback
     p.sync_frames + p.calibration_frames
 }
 
@@ -408,6 +419,7 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<
 
     let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
 
+    // Checker border.
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
             let in_payload = x >= p.border_cells
@@ -422,6 +434,10 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<
         }
     }
 
+    // Corner fiducials just inside the border.
+    draw_corner_fiducials(&mut img, p);
+
+    // Payload
     let mut bit_i = 0usize;
     for y in 0..p.grid_h {
         for x in 0..p.grid_w {
@@ -443,6 +459,41 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<ImageBuffer<
     Ok(img)
 }
 
+fn draw_corner_fiducials(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, p: &RasterParams) {
+    // Simple high-contrast L-shapes at 4 corners inside border.
+    // Each corner uses a unique color so orientation can be inferred.
+    // This is a lightweight precursor to full ArUco/AprilTag-style fiducials.
+    // AprilTag-style systems are designed for robust detection under perspective and noise. [web:142]
+
+    let s = p.fiducial_size_cells;
+    let b = p.border_cells;
+
+    // Top-left: red L
+    draw_l(img, b, b, s, p.cell_px, 2);
+    // Top-right: green L
+    draw_l(img, b + p.grid_w - s, b, s, p.cell_px, 3);
+    // Bottom-left: blue L
+    draw_l(img, b, b + p.grid_h - s, s, p.cell_px, 4);
+    // Bottom-right: yellow L
+    draw_l(img, b + p.grid_w - s, b + p.grid_h - s, s, p.cell_px, 7);
+}
+
+fn draw_l(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x0: u32, y0: u32, s: u32, cell_px: u32, sym: u8) {
+    let c = Palette8::Basic.color(sym).unwrap();
+
+    // Vertical bar
+    for y in y0..(y0 + s) {
+        paint_cell(img, x0, y, cell_px, c.r, c.g, c.b);
+        paint_cell(img, x0 + 1, y, cell_px, c.r, c.g, c.b);
+    }
+
+    // Horizontal bar
+    for x in x0..(x0 + s) {
+        paint_cell(img, x, y0, cell_px, c.r, c.g, c.b);
+        paint_cell(img, x, y0 + 1, cell_px, c.r, c.g, c.b);
+    }
+}
+
 fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
@@ -461,6 +512,7 @@ fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec
     let h_px = full_grid_h(p) * p.cell_px;
     let mut img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(w_px, h_px);
 
+    // Border.
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
             let in_payload = x >= p.border_cells
@@ -475,12 +527,17 @@ fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec
         }
     }
 
+    // Fiducials.
+    draw_corner_fiducials(&mut img, p);
+
+    // Fill payload with black.
     for y in 0..p.grid_h {
         for x in 0..p.grid_w {
             paint_cell(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, 0, 0, 0);
         }
     }
 
+    // Palette strip at top of payload.
     let block_w = std::cmp::max(1, p.grid_w / 8);
     for sym in 0u8..8u8 {
         let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
@@ -501,6 +558,7 @@ fn render_calibration_frame(p: &RasterParams) -> Result<ImageBuffer<Rgb<u8>, Vec
         }
     }
 
+    // Checkerboard remainder.
     for y in 4..p.grid_h {
         for x in 0..p.grid_w {
             let sym = if ((x ^ y) & 1) == 0 { 1 } else { 0 };

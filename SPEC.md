@@ -2,9 +2,9 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3g scope (implemented)
+## Increment 3h scope (implemented)
 
-- CLI can now decode directly from a MKV by extracting a numbered PNG frame sequence with FFmpeg.
+- Add simple **corner fiducials** (colored L-shapes) inside the border.
 
-FFmpeg documents options like `-vsync` for controlling frame duplication/dropping during extraction, which matters when treating video frames as discrete packets. [web:173]
+Fiducial designs like AprilTag are built to stay detectable under perspective distortion and noise; while these L-shapes are much simpler than AprilTag, they’re meant to provide orientation/corner hints for the next step (homography + deskew). [web:142]
 
