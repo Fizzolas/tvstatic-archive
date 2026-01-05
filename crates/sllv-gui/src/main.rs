@@ -1,14 +1,10 @@
-use eframe::egui;
+use crate::state::AppState;
 
-mod state;
-mod ui;
-mod ui_impl;
-
-fn main() -> eframe::Result<()> {
+fn main() {
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "SLLV",
+    let _ = eframe::run_native(
+        "SLLV GUI",
         native_options,
-        Box::new(|_cc| Ok(Box::new(state::AppState::default()))),
-    )
+        Box::new(|_cc| Ok(Box::new(AppState::default()))),
+    );
 }

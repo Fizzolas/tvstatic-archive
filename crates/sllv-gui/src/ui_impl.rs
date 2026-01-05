@@ -81,16 +81,18 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(not set)".into())
     ));
-    if ui.button("Choose input file").clicked() {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
-            state.encode.input = Some(path);
+    ui.horizontal(|ui| {
+        if ui.button("Choose input file").clicked() {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                state.encode.input = Some(path);
+            }
         }
-    }
-    if ui.button("Choose input folder").clicked() {
-        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-            state.encode.input = Some(path);
+        if ui.button("Choose input folder").clicked() {
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                state.encode.input = Some(path);
+            }
         }
-    }
+    });
 
     ui.label(format!(
         "Output frames dir: {}",
@@ -131,7 +133,6 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.encode.rp.deskew, "Enable");
         });
 
-        // Fix E0499: render FEC header (needs &mut state for help_button) without holding `ref mut fec`.
         let show_fec = state.encode.rp.fec.is_some();
         if show_fec {
             ui.separator();
@@ -399,12 +400,17 @@ fn run_encode(state: &mut AppState) -> anyhow::Result<()> {
     let out_frames = state.encode.out_frames.as_ref().ok_or_else(|| anyhow::anyhow!("Output frames folder not set"))?;
 
     let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(input)?;
+
     sllv_core::raster::encode_bytes_to_frames_dir(&tar, &name, out_frames, &state.encode.rp)?;
 
-    if state.encode.out_mkv.is_some() {
-        return Err(anyhow::anyhow!(
-            "MKV output not wired in GUI yet. Use CLI for MKV or wait for next patch."
-        ));
+    // If the user chose MKV output, actually produce it now.
+    if let Some(out_mkv) = state.encode.out_mkv.as_ref() {
+        sllv_core::ffmpeg::frames_to_ffv1_mkv(
+            out_frames,
+            out_mkv,
+            state.encode.fps,
+            state.encode.ffmpeg_path.as_deref(),
+        )?;
     }
 
     Ok(())
@@ -413,13 +419,46 @@ fn run_encode(state: &mut AppState) -> anyhow::Result<()> {
 fn run_decode(state: &mut AppState) -> anyhow::Result<()> {
     let out_tar = state.decode.out_tar.as_ref().ok_or_else(|| anyhow::anyhow!("Output .tar not set"))?;
 
-    let frames_dir = if let Some(frames) = state.decode.input_frames.as_ref() {
-        frames.clone()
+    // If MKV input is selected, extract frames to a temp dir first.
+    let frames_dir: std::path::PathBuf;
+    let _temp_guard;
+
+    if let Some(mkv) = state.decode.input_mkv.as_ref() {
+        let tmp = std::env::temp_dir().join(format!(
+            "sllv_gui_decode_frames_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&tmp)?;
+        sllv_core::ffmpeg::mkv_to_frames(mkv, &tmp, state.decode.ffmpeg_path.as_deref())?;
+        frames_dir = tmp;
+
+        // Best-effort cleanup when AppState drops; keep it simple for now.
+        _temp_guard = TempDirCleanup { path: frames_dir.clone() };
+    } else if let Some(frames) = state.decode.input_frames.as_ref() {
+        frames_dir = frames.clone();
+        _temp_guard = TempDirCleanup { path: std::path::PathBuf::new() };
     } else {
-        return Err(anyhow::anyhow!("Choose a frames folder (GUI MKV decode not wired yet)"));
-    };
+        return Err(anyhow::anyhow!("Choose a frames folder or an MKV file"));
+    }
 
     let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_params(&frames_dir, &state.decode.rp)?;
     std::fs::write(out_tar, bytes)?;
+
     Ok(())
+}
+
+struct TempDirCleanup {
+    path: std::path::PathBuf,
+}
+
+impl Drop for TempDirCleanup {
+    fn drop(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
