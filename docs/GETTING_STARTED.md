@@ -1,62 +1,42 @@
 # Getting started (new users)
 
-## Choose a workflow
+## The simplest way (Windows)
 
-- **Archive workflow**: best for storage.
-  - Output: a frames directory and/or a lossless MKV (Matroska + FFV1).
-  - Requires FFmpeg only if you use MKV.
+1) Install Rust (this provides the `cargo` command):
+   https://www.rust-lang.org/tools/install
 
-- **Scan workflow**: best for screen-to-phone transfer.
-  - Output: a frames directory tuned for camera capture.
-  - No FFmpeg required.
+2) Download this repo as a ZIP and unzip it.
 
-## Build
+3) Double-click:
 
-### Windows
+- `scripts\build.bat`
 
-- `scripts\build.bat` (cmd)
-- `scripts\build.ps1` (PowerShell)
+4) After it says it built `dist\sllv.exe`, run:
 
-Output: `dist\sllv.exe`
+- `dist\sllv.exe doctor`
 
-### macOS / Linux
+If the window closes too fast, run it from Command Prompt:
 
-- `./scripts/build.sh`
+- Open Command Prompt
+- `cd` into the unzipped folder
+- Run: `scripts\build.bat`
 
-Output: `dist/sllv`
+## If the build fails
 
-## First run
+Most failures on Windows are one of these:
 
-Run:
+- Rust isn't installed.
+- `cargo` isn't on PATH (re-open Command Prompt after installing Rust).
+- Missing C++ build tools (install "Visual Studio Build Tools" and select "Desktop development with C++").
 
-```bash
-./dist/sllv doctor
-```
+## Workflows
 
-If you need MKV:
+### Archive (lossless video)
 
-```bash
-./dist/sllv doctor --check-ffmpeg
-```
+- Requires ffmpeg only if you create/decode MKV.
 
-## Common commands
+### Scan (phone capture)
 
-Archive encode + decode:
-
-```bash
-./dist/sllv encode --profile archive --input ./my_folder --out-frames ./frames --out-mkv ./out.mkv --fps 24
-./dist/sllv decode --profile archive --input-mkv ./out.mkv --out-tar ./recovered.tar
-```
-
-Scan encode + decode:
-
-```bash
-./dist/sllv encode --profile scan --input ./my_folder --out-frames ./frames_scan --fps 12
-./dist/sllv decode --profile scan --input-frames ./frames_scan --out-tar ./recovered.tar
-```
-
-## If ffmpeg isn't found
-
-Either install ffmpeg so it’s on PATH, or pass `--ffmpeg-path`.
+- Does not require ffmpeg.
 
 FFmpeg’s wiki documents FFV1 usage for archival encoding. [web:60]
