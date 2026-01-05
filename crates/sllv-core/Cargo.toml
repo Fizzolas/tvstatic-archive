@@ -1,6 +1,6 @@
 [package]
 name = "sllv-core"
-version = "0.0.18"
+version = "0.0.19"
 edition = "2021"
 
 [dependencies]
@@ -14,7 +14,8 @@ hex = "0.4"
 walkdir = "2"
 tar = "0.4"
 
-reed-solomon-erasure = "6"
+# Temporarily removed to unblock Windows builds; FEC is in a no-RS fallback mode for now.
+# reed-solomon-erasure = "6"
 crc32fast = "1"
 
 nalgebra = "0.33"
