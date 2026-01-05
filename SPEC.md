@@ -9,20 +9,18 @@
   - Video file on disk (exact pixels possible with lossless codecs).
   - Live camera capture of a playing video (drop/blur tolerant).
 
-## Increment 3c scope (implemented)
+## Increment 3d scope (implemented)
 
-- Add a border around every frame (black/white checker) to help future camera detection/deskew.
-- Switch decode from exact RGB equality to **nearest-palette** classification to tolerate non-perfect capture.
+- Add a first Forward Error Correction (FEC) layer using **Reed–Solomon erasure coding**.
 
-Fiducial systems (e.g., AprilTag) exist specifically to make visual detection robust under perspective and noise, and this border is a simple first step toward that kind of robustness. [web:139][web:142]
+This is specifically to survive frame loss: erasure coding can reconstruct missing shards given enough redundancy, but it does not fix arbitrary bit errors—those should be detected (checksums) and treated as missing, which the crate docs warn about. [web:157]
 
-## Frame structure (Increment 3c)
+## FEC model (draft)
 
-- Segment 0: Sync slate (default 30 frames)
-- Segment 1: Calibration (default 1 frame)
-- Segment 2: Data frames
+- Data is divided into groups.
+- Each group becomes N data shards + M parity shards.
+- Each shard is independently checksummed.
+- Shards are the unit that will map into frames in later increments.
 
-Each frame now has:
-- Outer border region (checker pattern)
-- Inner payload region (colored cells)
+Next: wire this into the raster encoder so frames carry shard headers.
 
