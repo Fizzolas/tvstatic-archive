@@ -1,4 +1,5 @@
-use crate::ffmpeg;
+mod ffmpeg;
+
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
@@ -80,13 +81,8 @@ fn main() -> anyhow::Result<()> {
             let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(&input).context("pack input")?;
             let rp = profile.to_profile().defaults();
 
-            let manifest = sllv_core::raster::encode_bytes_to_frames_dir(
-                &tar,
-                &name,
-                &out_frames,
-                &rp,
-            )
-            .context("encode bytes->frames")?;
+            let manifest = sllv_core::raster::encode_bytes_to_frames_dir(&tar, &name, &out_frames, &rp)
+                .context("encode bytes->frames")?;
 
             if let Some(out) = out_mkv {
                 ffmpeg::frames_to_ffv1_mkv(&out_frames, &out, fps, ffmpeg_path.as_deref())
@@ -109,8 +105,7 @@ fn main() -> anyhow::Result<()> {
                     .parent()
                     .unwrap_or(Path::new("."))
                     .join("_sllv_tmp_frames");
-                ffmpeg::mkv_to_frames(&mkv, &tmp, ffmpeg_path.as_deref())
-                    .context("ffmpeg mkv->frames")?;
+                ffmpeg::mkv_to_frames(&mkv, &tmp, ffmpeg_path.as_deref()).context("ffmpeg mkv->frames")?;
                 tmp
             } else {
                 anyhow::bail!("must provide --input-frames or --input-mkv");
@@ -137,7 +132,6 @@ fn run_doctor(check_ffmpeg: bool, ffmpeg_path: Option<&Path>) -> anyhow::Result<
 
     println!("- Temp dir: {}", std::env::temp_dir().display());
 
-    // Temp write test
     let tmp = std::env::temp_dir().join("sllv_doctor_write_test.tmp");
     std::fs::write(&tmp, b"ok").context("write temp")?;
     std::fs::remove_file(&tmp).ok();
@@ -147,13 +141,13 @@ fn run_doctor(check_ffmpeg: bool, ffmpeg_path: Option<&Path>) -> anyhow::Result<
         let p = ffmpeg_path
             .map(|x| x.display().to_string())
             .unwrap_or_else(|| "(PATH)".to_string());
-        match crate::ffmpeg::mkv_to_frames(Path::new("__nonexistent__.mkv"), Path::new("."), ffmpeg_path) {
-            Ok(_) => {
-                println!("- FFmpeg: ok ({p})");
-            }
+
+        // This call will succeed only if ffmpeg is runnable; it may still error due to missing input.
+        match ffmpeg::mkv_to_frames(Path::new("__nonexistent__.mkv"), Path::new("."), ffmpeg_path) {
+            Ok(_) => println!("- FFmpeg: ok ({p})"),
             Err(e) => {
-                let msg = format!("{e:#}");
-                if msg.to_lowercase().contains("not found") {
+                let msg = format!("{e:#}").to_lowercase();
+                if msg.contains("ffmpeg not found") || msg.contains("not found") {
                     println!("- FFmpeg: missing ({p})");
                     println!("  Install ffmpeg or pass --ffmpeg-path.");
                 } else {

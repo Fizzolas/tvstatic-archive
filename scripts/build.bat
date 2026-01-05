@@ -2,8 +2,6 @@
 setlocal enabledelayedexpansion
 
 REM SLLV build helper (Windows)
-REM This script is intended for non-developers.
-REM It will keep the window open and show clear errors.
 
 cd /d "%~dp0\.."
 
@@ -12,7 +10,6 @@ echo SLLV build (Windows)
 echo ==================
 echo.
 
-REM Basic checks
 where cargo >nul 2>nul
 if errorlevel 1 (
   echo ERROR: Rust is not installed or cargo is not on PATH.
@@ -31,28 +28,31 @@ cargo build -p sllv-cli --release
 if errorlevel 1 (
   echo.
   echo ERROR: Build failed.
-  echo If you see linker/Visual Studio build tools errors, install:
-  echo   "Visual Studio Build Tools" with "Desktop development with C++".
+  echo.
+  echo Tip: The error is usually above. Scroll up.
   echo.
   goto :fail
 )
 
-if exist target\release\sllv.exe (
+if exist target\release\sllv-cli.exe (
+  copy /y target\release\sllv-cli.exe dist\sllv.exe >nul
+) else if exist target\release\sllv.exe (
   copy /y target\release\sllv.exe dist\sllv.exe >nul
-  echo.
-  echo OK: Built dist\sllv.exe
-  echo.
-  echo Next:
-  echo   dist\sllv.exe doctor
-  echo.
-  goto :ok
 ) else (
   echo.
-  echo ERROR: target\release\sllv.exe not found after build.
+  echo ERROR: Could not find compiled exe in target\release.
   goto :fail
 )
 
-:ok
+echo.
+echo OK: Built dist\sllv.exe
+
+echo.
+echo Running: dist\sllv.exe doctor
+
+dist\sllv.exe doctor
+
+echo.
 echo Press any key to close.
 pause >nul
 exit /b 0
