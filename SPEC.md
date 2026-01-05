@@ -2,10 +2,9 @@
 
 > Working name for the custom symbology/container.
 
-## Increment 3i (part 2) scope (implemented)
+## Increment 3j scope (implemented)
 
-- Decoder now optionally **deskews** frames using the four colored fiducials.
-- Deskew pipeline: find corner fiducials → compute homography → warp to canonical grid → classify symbols.
+- Add explicit **profile presets**: Archive vs Scan.
 
-This is the standard four-point perspective transform concept used by common CV pipelines (e.g., OpenCV). [web:258][web:218]
+Scan workflows need perspective correction and tolerate dropped frames; this is why the scan preset enables deskew and erasure coding, while the archive preset can disable them when using a lossless FFV1 pipeline. [web:60][web:258]
 

@@ -1,6 +1,6 @@
 use crate::ffmpeg;
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -8,6 +8,21 @@ use std::path::PathBuf;
 struct Cli {
     #[command(subcommand)]
     cmd: Command,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum ProfileArg {
+    Archive,
+    Scan,
+}
+
+impl ProfileArg {
+    fn to_profile(&self) -> sllv_core::Profile {
+        match self {
+            ProfileArg::Archive => sllv_core::Profile::Archive,
+            ProfileArg::Scan => sllv_core::Profile::Scan,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -21,6 +36,8 @@ enum Command {
         out_mkv: Option<PathBuf>,
         #[arg(long, default_value_t = 24)]
         fps: u32,
+        #[arg(long, value_enum, default_value_t = ProfileArg::Archive)]
+        profile: ProfileArg,
     },
     Decode {
         #[arg(long)]
@@ -29,6 +46,8 @@ enum Command {
         input_mkv: Option<PathBuf>,
         #[arg(long)]
         out_tar: PathBuf,
+        #[arg(long, value_enum, default_value_t = ProfileArg::Archive)]
+        profile: ProfileArg,
     },
 }
 
@@ -41,8 +60,11 @@ fn main() -> anyhow::Result<()> {
             out_frames,
             out_mkv,
             fps,
+            profile,
         } => {
             let tar = sllv_core::pack::pack_path_to_tar_bytes(&input).context("pack input")?;
+            let (rp, _) = profile.to_profile().defaults();
+
             let manifest = sllv_core::raster::encode_bytes_to_frames_dir(
                 &tar,
                 input
@@ -50,7 +72,7 @@ fn main() -> anyhow::Result<()> {
                     .and_then(|x| x.to_str())
                     .unwrap_or("input"),
                 &out_frames,
-                &sllv_core::raster::RasterParams::default(),
+                &rp,
             )
             .context("encode bytes->frames")?;
 
@@ -64,11 +86,11 @@ fn main() -> anyhow::Result<()> {
             input_frames,
             input_mkv,
             out_tar,
+            profile,
         } => {
             let frames_dir = if let Some(frames) = input_frames {
                 frames
             } else if let Some(mkv) = input_mkv {
-                // Extract into a sibling folder.
                 let tmp = out_tar
                     .parent()
                     .unwrap_or(std::path::Path::new("."))
@@ -78,6 +100,11 @@ fn main() -> anyhow::Result<()> {
             } else {
                 anyhow::bail!("must provide --input-frames or --input-mkv");
             };
+
+            // Profile currently influences decoder via default RasterParams.
+            // For now, we just run the core decoder (which auto-detects data start and deskews if enabled).
+            // Next increment can plumb params explicitly into decode.
+            let _ = profile;
 
             let bytes = sllv_core::raster::decode_frames_dir_to_bytes(&frames_dir)
                 .context("decode frames")?;
