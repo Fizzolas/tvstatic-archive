@@ -1,3 +1,7 @@
+mod state;
+mod ui;
+mod ui_impl;
+
 use crate::state::AppState;
 
 fn main() {
