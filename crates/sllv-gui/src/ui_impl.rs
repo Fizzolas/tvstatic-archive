@@ -6,8 +6,11 @@ use std::thread;
 
 impl eframe::App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Poll progress channel
-        if let Some(rx) = &self.progress_rx {
+        // Poll progress channel (borrow-safe: clear receiver after the poll loop completes)
+        let mut clear_progress = false;
+        let mut error_msg: Option<String> = None;
+
+        if let Some(rx) = self.progress_rx.as_ref() {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
                     sllv_core::raster::ProgressMsg::Stage { name, done, total } => {
@@ -28,18 +31,27 @@ impl eframe::App for AppState {
                     sllv_core::raster::ProgressMsg::Done => {
                         self.is_running = false;
                         self.progress = None;
-                        self.progress_rx = None;
+                        clear_progress = true;
                         ctx.request_repaint();
+                        break;
                     }
                     sllv_core::raster::ProgressMsg::Error(e) => {
-                        self.log.push_str(&format!("Error: {e}\n"));
                         self.is_running = false;
                         self.progress = None;
-                        self.progress_rx = None;
+                        clear_progress = true;
+                        error_msg = Some(e);
                         ctx.request_repaint();
+                        break;
                     }
                 }
             }
+        }
+
+        if clear_progress {
+            self.progress_rx = None;
+        }
+        if let Some(e) = error_msg {
+            self.log.push_str(&format!("Error: {e}\n"));
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {

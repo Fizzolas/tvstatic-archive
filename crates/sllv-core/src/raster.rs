@@ -163,8 +163,10 @@ pub fn encode_bytes_to_frames_dir_with_progress(
         let packets_arc = Arc::new(packets);
         let p_clone = p.clone();
         let max_payload = max_frame_payload;
+        let orig_total_bytes = input_bytes.len() as u64;
 
         let num_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         std::thread::scope(|s| {
             // Worker threads: render frames
@@ -172,13 +174,10 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                 let tx = tx_img.clone();
                 let pkts = Arc::clone(&packets_arc);
                 let params = p_clone.clone();
+                let counter = Arc::clone(&counter);
                 s.spawn(move || {
-                    let mut k = 0;
                     loop {
-                        let idx = {
-                            static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-                            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        };
+                        let idx = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if idx >= pkts.len() {
                             break;
                         }
@@ -188,7 +187,7 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                             group_index: pkt.group_index,
                             shard_index: pkt.shard_index,
                             shard_len: pkt.shard_bytes.len() as u16,
-                            orig_total_bytes: 0,
+                            orig_total_bytes,
                             shard_sha256: pkt.shard_sha256,
                             header_crc32: 0,
                         }
@@ -205,7 +204,6 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                             let frame_index = params.sync_frames + params.calibration_frames + (idx as u32);
                             let _ = tx.send((frame_index, img));
                         }
-                        k += 1;
                     }
                 });
             }
@@ -333,6 +331,7 @@ pub fn decode_frames_dir_to_bytes_with_progress(
         let p_arc = Arc::new(p.clone());
 
         let num_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
         std::thread::scope(|s| {
             // Worker threads: decode frames
@@ -341,19 +340,19 @@ pub fn decode_frames_dir_to_bytes_with_progress(
                 let dir = Arc::clone(&in_dir_arc);
                 let m = Arc::clone(&manifest_arc);
                 let params = Arc::clone(&p_arc);
+                let counter = Arc::clone(&counter);
                 s.spawn(move || {
                     loop {
-                        let i = {
-                            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                            let idx = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            start_index + idx
-                        };
+                        let idx = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let i = start_index + idx;
                         if i >= m.frames {
                             break;
                         }
+
                         let path = dir.join(format!("frame_{:06}.png", i));
-                        let bytes_res = decode_frame_bytes_with_optional_deskew(&path, &m, &params, palette);
-                        if let Ok(bytes) = bytes_res {
+                        let mut out_pkt: Option<ShardPacket> = None;
+
+                        if let Ok(bytes) = decode_frame_bytes_with_optional_deskew(&path, &m, &params, palette) {
                             if bytes.len() >= ShardHeader::BYTES {
                                 let hdr = ShardHeader::from_bytes(&bytes[..ShardHeader::BYTES]);
                                 if hdr.crc_ok(&bytes[..ShardHeader::BYTES]) {
@@ -364,17 +363,20 @@ pub fn decode_frames_dir_to_bytes_with_progress(
                                         h.update(&shard);
                                         let sha: [u8; 32] = h.finalize().into();
                                         if sha == hdr.shard_sha256 {
-                                            let _ = tx.send(Some(ShardPacket {
+                                            out_pkt = Some(ShardPacket {
                                                 group_index: hdr.group_index,
                                                 shard_index: hdr.shard_index,
                                                 shard_bytes: shard,
                                                 shard_sha256: hdr.shard_sha256,
-                                            }));
+                                            });
                                         }
                                     }
                                 }
                             }
                         }
+
+                        // Always send one message per processed frame so progress is accurate.
+                        let _ = tx.send(out_pkt);
                     }
                 });
             }
