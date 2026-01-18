@@ -1,4 +1,5 @@
 mod ffmpeg;
+mod interactive;
 
 use anyhow::Context;
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
@@ -9,7 +10,7 @@ use std::path::{Path, PathBuf};
     name = "sllv",
     version,
     about = "SLLV turns files/folders into TV-static frames and can recover them later.",
-    after_help = "Examples:\n  sllv encode -i <path> -o <frames_dir>\n  sllv encode -i <path> -o <frames_dir> --out-mkv out.mkv\n  sllv decode -i <frames_dir> -o recovered.tar\n  sllv decode -m input.mkv -o recovered.tar\n  sllv doctor --check-ffmpeg\n\nNotes:\n  - Decode always outputs a .tar file; extract it with: tar -xf recovered.tar -C out_dir\n  - Encode/decode must use the same --profile (archive vs scan)."
+    after_help = "Examples:\n  sllv encode -i <path> -o <frames_dir>\n  sllv encode -i <path> -o <frames_dir> --out-mkv out.mkv\n  sllv decode -i <frames_dir> -o recovered.tar\n  sllv decode -m input.mkv -o recovered.tar\n  sllv doctor --check-ffmpeg\n\nNotes:\n  - Decode always outputs a .tar file; extract it with: tar -xf recovered.tar -C out_dir\n  - Encode/decode must use the same --profile (archive vs scan).\n\nTip:\n  - If you double-click sllv.exe on Windows, it opens an interactive menu."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -103,6 +104,12 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Windows UX: if the user double-clicks sllv.exe, there are no args and the console would otherwise
+    // close immediately after printing usage. Instead, open a simple interactive menu.
+    if std::env::args_os().len() <= 1 {
+        return interactive::run();
+    }
+
     let cli = Cli::parse();
 
     match cli.cmd {
