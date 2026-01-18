@@ -1,9 +1,47 @@
 use crate::state::AppState;
 use crate::ui::{help_button, HelpTopic, Tab};
 use eframe::egui;
+use std::sync::mpsc;
+use std::thread;
 
 impl eframe::App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll progress channel
+        if let Some(rx) = &self.progress_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    sllv_core::raster::ProgressMsg::Stage { name, done, total } => {
+                        if let Some(ref mut prog) = self.progress {
+                            prog.stage = name;
+                            prog.done = done;
+                            prog.total = total;
+                        } else {
+                            self.progress = Some(crate::state::Progress {
+                                stage: name,
+                                done,
+                                total,
+                                started_at: std::time::Instant::now(),
+                            });
+                        }
+                        ctx.request_repaint();
+                    }
+                    sllv_core::raster::ProgressMsg::Done => {
+                        self.is_running = false;
+                        self.progress = None;
+                        self.progress_rx = None;
+                        ctx.request_repaint();
+                    }
+                    sllv_core::raster::ProgressMsg::Error(e) => {
+                        self.log.push_str(&format!("Error: {e}\n"));
+                        self.is_running = false;
+                        self.progress = None;
+                        self.progress_rx = None;
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        }
+
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Encode, "Encode");
@@ -19,6 +57,20 @@ impl eframe::App for AppState {
         });
 
         egui::TopBottomPanel::bottom("log").resizable(true).show(ctx, |ui| {
+            if let Some(ref prog) = self.progress {
+                ui.label(format!("Stage: {} ({}/{})", prog.stage, prog.done, prog.total));
+                let frac = if prog.total > 0 {
+                    (prog.done as f32) / (prog.total as f32)
+                } else {
+                    0.0
+                };
+                ui.add(egui::ProgressBar::new(frac).show_percentage());
+                if let Some(eta) = prog.eta_secs() {
+                    ui.label(format!("ETA: {}s", eta));
+                }
+                ui.separator();
+            }
+
             ui.label("Log");
             egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
                 ui.add(egui::TextEdit::multiline(&mut self.log).desired_rows(6));
@@ -207,12 +259,11 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    if ui.button("Start encode").clicked() {
-        match run_encode(state) {
-            Ok(()) => state.log.push_str("Encode OK\n"),
-            Err(e) => state.log.push_str(&format!("Encode failed: {e:#}\n")),
+    ui.add_enabled_ui(!state.is_running, |ui| {
+        if ui.button("Start encode").clicked() {
+            spawn_encode_thread(state);
         }
-    }
+    });
 }
 
 fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
@@ -368,12 +419,11 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    if ui.button("Start decode").clicked() {
-        match run_decode(state) {
-            Ok(()) => state.log.push_str("Decode OK\n"),
-            Err(e) => state.log.push_str(&format!("Decode failed: {e:#}\n")),
+    ui.add_enabled_ui(!state.is_running, |ui| {
+        if ui.button("Start decode").clicked() {
+            spawn_decode_thread(state);
         }
-    }
+    });
 }
 
 fn ui_doctor(ui: &mut egui::Ui, state: &mut AppState) {
@@ -395,59 +445,121 @@ fn run_doctor() -> anyhow::Result<String> {
     Ok(format!("Doctor OK. Temp dir: {}", std::env::temp_dir().display()))
 }
 
-fn run_encode(state: &mut AppState) -> anyhow::Result<()> {
-    let input = state.encode.input.as_ref().ok_or_else(|| anyhow::anyhow!("Input not set"))?;
-    let out_frames = state.encode.out_frames.as_ref().ok_or_else(|| anyhow::anyhow!("Output frames folder not set"))?;
+fn spawn_encode_thread(state: &mut AppState) {
+    let input = match state.encode.input.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            state.log.push_str("Error: Input not set\n");
+            return;
+        }
+    };
+    let out_frames = match state.encode.out_frames.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            state.log.push_str("Error: Output frames folder not set\n");
+            return;
+        }
+    };
 
-    let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(input)?;
+    let out_mkv = state.encode.out_mkv.clone();
+    let fps = state.encode.fps;
+    let ffmpeg_path = state.encode.ffmpeg_path.clone();
+    let rp = state.encode.rp.clone();
 
-    sllv_core::raster::encode_bytes_to_frames_dir(&tar, &name, out_frames, &state.encode.rp)?;
+    let (tx, rx) = mpsc::channel();
+    state.progress_rx = Some(rx);
+    state.is_running = true;
+    state.progress = Some(crate::state::Progress {
+        stage: "starting".into(),
+        done: 0,
+        total: 1,
+        started_at: std::time::Instant::now(),
+    });
 
-    // If the user chose MKV output, actually produce it now.
-    if let Some(out_mkv) = state.encode.out_mkv.as_ref() {
-        sllv_core::ffmpeg::frames_to_ffv1_mkv(
-            out_frames,
-            out_mkv,
-            state.encode.fps,
-            state.encode.ffmpeg_path.as_deref(),
-        )?;
-    }
+    thread::spawn(move || {
+        let res = (|| -> anyhow::Result<()> {
+            let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(&input)?;
+            sllv_core::raster::encode_bytes_to_frames_dir_with_progress(&tar, &name, &out_frames, &rp, Some(tx.clone()))?;
 
-    Ok(())
+            if let Some(out) = out_mkv {
+                sllv_core::ffmpeg::frames_to_ffv1_mkv(&out_frames, &out, fps, ffmpeg_path.as_deref())?;
+            }
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                let _ = tx.send(sllv_core::raster::ProgressMsg::Done);
+            }
+            Err(e) => {
+                let _ = tx.send(sllv_core::raster::ProgressMsg::Error(format!("{e:#}")));
+            }
+        }
+    });
 }
 
-fn run_decode(state: &mut AppState) -> anyhow::Result<()> {
-    let out_tar = state.decode.out_tar.as_ref().ok_or_else(|| anyhow::anyhow!("Output .tar not set"))?;
+fn spawn_decode_thread(state: &mut AppState) {
+    let out_tar = match state.decode.out_tar.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            state.log.push_str("Error: Output .tar not set\n");
+            return;
+        }
+    };
 
-    // If MKV input is selected, extract frames to a temp dir first.
-    let frames_dir: std::path::PathBuf;
-    let _temp_guard;
+    let input_mkv = state.decode.input_mkv.clone();
+    let input_frames = state.decode.input_frames.clone();
+    let ffmpeg_path = state.decode.ffmpeg_path.clone();
+    let rp = state.decode.rp.clone();
 
-    if let Some(mkv) = state.decode.input_mkv.as_ref() {
-        let tmp = std::env::temp_dir().join(format!(
-            "sllv_gui_decode_frames_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
-        std::fs::create_dir_all(&tmp)?;
-        sllv_core::ffmpeg::mkv_to_frames(mkv, &tmp, state.decode.ffmpeg_path.as_deref())?;
-        frames_dir = tmp;
+    let (tx, rx) = mpsc::channel();
+    state.progress_rx = Some(rx);
+    state.is_running = true;
+    state.progress = Some(crate::state::Progress {
+        stage: "starting".into(),
+        done: 0,
+        total: 1,
+        started_at: std::time::Instant::now(),
+    });
 
-        // Best-effort cleanup when AppState drops; keep it simple for now.
-        _temp_guard = TempDirCleanup { path: frames_dir.clone() };
-    } else if let Some(frames) = state.decode.input_frames.as_ref() {
-        frames_dir = frames.clone();
-        _temp_guard = TempDirCleanup { path: std::path::PathBuf::new() };
-    } else {
-        return Err(anyhow::anyhow!("Choose a frames folder or an MKV file"));
-    }
+    thread::spawn(move || {
+        let res = (|| -> anyhow::Result<()> {
+            let frames_dir: std::path::PathBuf;
+            let _temp_guard;
 
-    let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_params(&frames_dir, &state.decode.rp)?;
-    std::fs::write(out_tar, bytes)?;
+            if let Some(mkv) = input_mkv {
+                let tmp = std::env::temp_dir().join(format!(
+                    "sllv_gui_decode_frames_{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                ));
+                std::fs::create_dir_all(&tmp)?;
+                sllv_core::ffmpeg::mkv_to_frames(&mkv, &tmp, ffmpeg_path.as_deref())?;
+                frames_dir = tmp;
+                _temp_guard = TempDirCleanup { path: frames_dir.clone() };
+            } else if let Some(frames) = input_frames {
+                frames_dir = frames;
+                _temp_guard = TempDirCleanup { path: std::path::PathBuf::new() };
+            } else {
+                anyhow::bail!("Choose a frames folder or an MKV file");
+            }
 
-    Ok(())
+            let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_progress(&frames_dir, &rp, Some(tx.clone()))?;
+            std::fs::write(&out_tar, bytes)?;
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                let _ = tx.send(sllv_core::raster::ProgressMsg::Done);
+            }
+            Err(e) => {
+                let _ = tx.send(sllv_core::raster::ProgressMsg::Error(format!("{e:#}")));
+            }
+        }
+    });
 }
 
 struct TempDirCleanup {
