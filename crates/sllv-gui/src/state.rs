@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct EncodeJob {
@@ -52,12 +54,35 @@ impl Default for DecodeJob {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Progress {
+    pub stage: String,
+    pub done: u64,
+    pub total: u64,
+    pub started_at: Instant,
+}
+
+impl Progress {
+    pub fn eta_secs(&self) -> Option<u64> {
+        if self.done == 0 || self.total == 0 {
+            return None;
+        }
+        let elapsed = self.started_at.elapsed().as_secs_f64();
+        let per_item = elapsed / (self.done as f64);
+        let remaining = self.total.saturating_sub(self.done) as f64;
+        Some((remaining * per_item).round() as u64)
+    }
+}
+
 pub struct AppState {
     pub tab: crate::ui::Tab,
     pub encode: EncodeJob,
     pub decode: DecodeJob,
     pub log: String,
     pub show_help: Option<crate::ui::HelpTopic>,
+    pub is_running: bool,
+    pub progress: Option<Progress>,
+    pub progress_rx: Option<mpsc::Receiver<sllv_core::raster::ProgressMsg>>,
 }
 
 impl Default for AppState {
@@ -68,6 +93,9 @@ impl Default for AppState {
             decode: DecodeJob::default(),
             log: String::new(),
             show_help: None,
+            is_running: false,
+            progress: None,
+            progress_rx: None,
         }
     }
 }

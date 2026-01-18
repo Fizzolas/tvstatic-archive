@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::mpsc;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -73,11 +75,28 @@ pub enum RasterError {
     Fec(String),
 }
 
+#[derive(Debug, Clone)]
+pub enum ProgressMsg {
+    Stage { name: String, done: u64, total: u64 },
+    Done,
+    Error(String),
+}
+
 pub fn encode_bytes_to_frames_dir(
     input_bytes: &[u8],
     file_name: &str,
     out_dir: &Path,
     p: &RasterParams,
+) -> Result<EncodeManifest, RasterError> {
+    encode_bytes_to_frames_dir_with_progress(input_bytes, file_name, out_dir, p, None)
+}
+
+pub fn encode_bytes_to_frames_dir_with_progress(
+    input_bytes: &[u8],
+    file_name: &str,
+    out_dir: &Path,
+    p: &RasterParams,
+    progress_tx: Option<mpsc::Sender<ProgressMsg>>,
 ) -> Result<EncodeManifest, RasterError> {
     fs::create_dir_all(out_dir)?;
 
@@ -85,20 +104,35 @@ pub fn encode_bytes_to_frames_dir(
     hasher.update(input_bytes);
     let sha256_hex = hex::encode(hasher.finalize());
 
+    // Sync frames
     for i in 0..p.sync_frames {
         render_solid_frame(p, p.sync_color_symbol)?.save(out_dir.join(format!("frame_{:06}.png", i)))?;
+        if let Some(ref tx) = progress_tx {
+            let _ = tx.send(ProgressMsg::Stage {
+                name: "sync".into(),
+                done: (i + 1) as u64,
+                total: p.sync_frames as u64,
+            });
+        }
     }
+
+    // Calibration frames
     for j in 0..p.calibration_frames {
         let idx = p.sync_frames + j;
         render_calibration_frame(p)?.save(out_dir.join(format!("frame_{:06}.png", idx)))?;
+        if let Some(ref tx) = progress_tx {
+            let _ = tx.send(ProgressMsg::Stage {
+                name: "calibration".into(),
+                done: (j + 1) as u64,
+                total: p.calibration_frames as u64,
+            });
+        }
     }
 
     let payload_cells = (p.grid_w as usize) * (p.grid_h as usize);
     let payload_bits = payload_cells * 3;
     let payload_bytes_capacity = (payload_bits / 8) as u32;
 
-    // When FEC is enabled, we reserve space for a shard header.
-    // When FEC is disabled (archive path), there is no header, so the full payload capacity is usable.
     let header_bytes = ShardHeader::BYTES as u32;
     let max_frame_payload = if p.fec.is_some() {
         payload_bytes_capacity.saturating_sub(header_bytes)
@@ -122,29 +156,74 @@ pub fn encode_bytes_to_frames_dir(
             )));
         }
 
-        for (k, pkt) in packets.iter().enumerate() {
-            let hdr = ShardHeader {
-                group_index: pkt.group_index,
-                shard_index: pkt.shard_index,
-                shard_len: pkt.shard_bytes.len() as u16,
-                orig_total_bytes: input_bytes.len() as u64,
-                shard_sha256: pkt.shard_sha256,
-                header_crc32: 0,
+        let total_packets = packets.len() as u64;
+
+        // Parallel frame generation with bounded queue
+        let (tx_img, rx_img) = mpsc::sync_channel::<(u32, image::ImageBuffer<Rgb<u8>, Vec<u8>>)>(16);
+        let packets_arc = Arc::new(packets);
+        let p_clone = p.clone();
+        let max_payload = max_frame_payload;
+
+        let num_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+
+        std::thread::scope(|s| {
+            // Worker threads: render frames
+            for _ in 0..num_workers {
+                let tx = tx_img.clone();
+                let pkts = Arc::clone(&packets_arc);
+                let params = p_clone.clone();
+                s.spawn(move || {
+                    let mut k = 0;
+                    loop {
+                        let idx = {
+                            static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        };
+                        if idx >= pkts.len() {
+                            break;
+                        }
+                        let pkt = &pkts[idx];
+
+                        let hdr = ShardHeader {
+                            group_index: pkt.group_index,
+                            shard_index: pkt.shard_index,
+                            shard_len: pkt.shard_bytes.len() as u16,
+                            orig_total_bytes: 0,
+                            shard_sha256: pkt.shard_sha256,
+                            header_crc32: 0,
+                        }
+                        .with_crc();
+
+                        let mut frame_bytes = Vec::with_capacity(ShardHeader::BYTES + pkt.shard_bytes.len());
+                        frame_bytes.extend_from_slice(&hdr.to_bytes());
+                        frame_bytes.extend_from_slice(&pkt.shard_bytes);
+
+                        let mut padded = vec![0u8; max_payload as usize];
+                        padded[..frame_bytes.len()].copy_from_slice(&frame_bytes);
+
+                        if let Ok(img) = render_payload_frame(&padded, &params) {
+                            let frame_index = params.sync_frames + params.calibration_frames + (idx as u32);
+                            let _ = tx.send((frame_index, img));
+                        }
+                        k += 1;
+                    }
+                });
             }
-            .with_crc();
+            drop(tx_img);
 
-            let mut frame_bytes = Vec::with_capacity(ShardHeader::BYTES + pkt.shard_bytes.len());
-            frame_bytes.extend_from_slice(&hdr.to_bytes());
-            frame_bytes.extend_from_slice(&pkt.shard_bytes);
-
-            let mut padded = vec![0u8; max_frame_payload as usize];
-            padded[..frame_bytes.len()].copy_from_slice(&frame_bytes);
-
-            let img = render_payload_frame(&padded, p)?;
-            let frame_index = p.sync_frames + p.calibration_frames + (k as u32);
-            img.save(out_dir.join(format!("frame_{:06}.png", frame_index)))?;
-            frames_written += 1;
-        }
+            // Writer thread: save to disk
+            for (frame_idx, img) in rx_img {
+                img.save(out_dir.join(format!("frame_{:06}.png", frame_idx))).ok();
+                frames_written += 1;
+                if let Some(ref tx) = progress_tx {
+                    let _ = tx.send(ProgressMsg::Stage {
+                        name: "encode".into(),
+                        done: frames_written as u64,
+                        total: total_packets,
+                    });
+                }
+            }
+        });
 
         let manifest = EncodeManifest {
             magic: EncodeManifest::MAGIC.to_string(),
@@ -183,6 +262,8 @@ pub fn encode_bytes_to_frames_dir(
         Ok(manifest)
     } else {
         let max_payload = std::cmp::min(max_frame_payload, p.chunk_bytes) as usize;
+        let total_chunks = (input_bytes.len() + max_payload - 1) / max_payload;
+
         for (i, chunk) in input_bytes.chunks(max_payload).enumerate() {
             let mut frame_payload = vec![0u8; max_payload];
             frame_payload[..chunk.len()].copy_from_slice(chunk);
@@ -190,6 +271,14 @@ pub fn encode_bytes_to_frames_dir(
             let frame_index = p.sync_frames + p.calibration_frames + (i as u32);
             img.save(out_dir.join(format!("frame_{:06}.png", frame_index)))?;
             frames_written += 1;
+
+            if let Some(ref tx) = progress_tx {
+                let _ = tx.send(ProgressMsg::Stage {
+                    name: "encode".into(),
+                    done: frames_written as u64,
+                    total: total_chunks as u64,
+                });
+            }
         }
 
         let manifest = EncodeManifest {
@@ -215,6 +304,14 @@ pub fn decode_frames_dir_to_bytes(in_dir: &Path) -> Result<Vec<u8>, RasterError>
 }
 
 pub fn decode_frames_dir_to_bytes_with_params(in_dir: &Path, p: &RasterParams) -> Result<Vec<u8>, RasterError> {
+    decode_frames_dir_to_bytes_with_progress(in_dir, p, None)
+}
+
+pub fn decode_frames_dir_to_bytes_with_progress(
+    in_dir: &Path,
+    p: &RasterParams,
+    progress_tx: Option<mpsc::Sender<ProgressMsg>>,
+) -> Result<Vec<u8>, RasterError> {
     let manifest_path = in_dir.join("manifest.json");
     if !manifest_path.exists() {
         return Err(RasterError::ManifestMissing);
@@ -227,70 +324,106 @@ pub fn decode_frames_dir_to_bytes_with_params(in_dir: &Path, p: &RasterParams) -
     let palette = Palette8::Basic;
     let start_index = detect_data_start(in_dir, &manifest, p, palette);
 
+    let total_frames = (manifest.frames - start_index) as u64;
+
     if let Some(fecp) = &p.fec {
-        let mut packets: Vec<ShardPacket> = Vec::new();
-        let mut orig_total: Option<u64> = None;
+        let (tx_pkt, rx_pkt) = mpsc::sync_channel::<Option<ShardPacket>>(16);
+        let in_dir_arc = Arc::new(in_dir.to_path_buf());
+        let manifest_arc = Arc::new(manifest.clone());
+        let p_arc = Arc::new(p.clone());
 
-        for i in start_index..manifest.frames {
-            let path = in_dir.join(format!("frame_{:06}.png", i));
-            let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, p, palette)?;
+        let num_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
 
-            if bytes.len() < ShardHeader::BYTES {
-                continue;
+        std::thread::scope(|s| {
+            // Worker threads: decode frames
+            for _ in 0..num_workers {
+                let tx = tx_pkt.clone();
+                let dir = Arc::clone(&in_dir_arc);
+                let m = Arc::clone(&manifest_arc);
+                let params = Arc::clone(&p_arc);
+                s.spawn(move || {
+                    loop {
+                        let i = {
+                            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                            let idx = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            start_index + idx
+                        };
+                        if i >= m.frames {
+                            break;
+                        }
+                        let path = dir.join(format!("frame_{:06}.png", i));
+                        let bytes_res = decode_frame_bytes_with_optional_deskew(&path, &m, &params, palette);
+                        if let Ok(bytes) = bytes_res {
+                            if bytes.len() >= ShardHeader::BYTES {
+                                let hdr = ShardHeader::from_bytes(&bytes[..ShardHeader::BYTES]);
+                                if hdr.crc_ok(&bytes[..ShardHeader::BYTES]) {
+                                    let shard_end = ShardHeader::BYTES + (hdr.shard_len as usize);
+                                    if shard_end <= bytes.len() {
+                                        let shard = bytes[ShardHeader::BYTES..shard_end].to_vec();
+                                        let mut h = Sha256::new();
+                                        h.update(&shard);
+                                        let sha: [u8; 32] = h.finalize().into();
+                                        if sha == hdr.shard_sha256 {
+                                            let _ = tx.send(Some(ShardPacket {
+                                                group_index: hdr.group_index,
+                                                shard_index: hdr.shard_index,
+                                                shard_bytes: shard,
+                                                shard_sha256: hdr.shard_sha256,
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
             }
-            let hdr = ShardHeader::from_bytes(&bytes[..ShardHeader::BYTES]);
-            if !hdr.crc_ok(&bytes[..ShardHeader::BYTES]) {
-                continue;
+            drop(tx_pkt);
+
+            let mut packets = Vec::new();
+            let mut decoded = 0u64;
+            for maybe_pkt in rx_pkt {
+                if let Some(pkt) = maybe_pkt {
+                    packets.push(pkt);
+                }
+                decoded += 1;
+                if let Some(ref tx) = progress_tx {
+                    let _ = tx.send(ProgressMsg::Stage {
+                        name: "decode".into(),
+                        done: decoded,
+                        total: total_frames,
+                    });
+                }
             }
 
-            if orig_total.is_none() {
-                orig_total = Some(hdr.orig_total_bytes);
+            let total = manifest.total_bytes as usize;
+            let out = fec_decode_collect(packets, total, fecp).map_err(|e| RasterError::Fec(format!("{e:?}")))?;
+
+            let mut hasher = Sha256::new();
+            hasher.update(&out);
+            let sha256_hex = hex::encode(hasher.finalize());
+            if sha256_hex != manifest.sha256_hex {
+                return Err(RasterError::ShaMismatch);
             }
-
-            let shard_end = ShardHeader::BYTES + (hdr.shard_len as usize);
-            if shard_end > bytes.len() {
-                continue;
-            }
-
-            let shard = bytes[ShardHeader::BYTES..shard_end].to_vec();
-
-            let mut h = Sha256::new();
-            h.update(&shard);
-            let sha: [u8; 32] = h.finalize().into();
-            if sha != hdr.shard_sha256 {
-                continue;
-            }
-
-            packets.push(ShardPacket {
-                group_index: hdr.group_index,
-                shard_index: hdr.shard_index,
-                shard_bytes: shard,
-                shard_sha256: hdr.shard_sha256,
-            });
-        }
-
-        let total = orig_total.unwrap_or(manifest.total_bytes) as usize;
-        let out = fec_decode_collect(packets, total, fecp).map_err(|e| RasterError::Fec(format!("{e:?}")))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(&out);
-        let sha256_hex = hex::encode(hasher.finalize());
-        if sha256_hex != manifest.sha256_hex {
-            return Err(RasterError::ShaMismatch);
-        }
-        Ok(out)
+            Ok(out)
+        })
     } else {
-        // Non-FEC (archive) path: only the first `manifest.chunk_bytes` bytes of each decoded frame are payload.
-        // This also maintains compatibility with older archives created when encode wrote fewer bytes than the
-        // full frame capacity.
         let per_frame = manifest.chunk_bytes as usize;
-
         let mut out = Vec::with_capacity(manifest.total_bytes as usize);
+
         for i in start_index..manifest.frames {
             let path = in_dir.join(format!("frame_{:06}.png", i));
             let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, p, palette)?;
             let take = std::cmp::min(bytes.len(), per_frame);
             out.extend_from_slice(&bytes[..take]);
+
+            if let Some(ref tx) = progress_tx {
+                let _ = tx.send(ProgressMsg::Stage {
+                    name: "decode".into(),
+                    done: (i - start_index + 1) as u64,
+                    total: total_frames,
+                });
+            }
         }
 
         out.truncate(manifest.total_bytes as usize);
@@ -383,7 +516,7 @@ fn find_color_centroid(
     let mut n = 0u64;
 
     for y in y0..(y0 + h) {
-        for x in x0..(y0 + 0 + w) {
+        for x in x0..(x0 + w) {
             let p0 = img.get_pixel(x, y);
             let d = rgb_dist2(p0[0], p0[1], p0[2], expected.r, expected.g, expected.b);
             if d < 60_000 {
