@@ -1,11 +1,16 @@
 mod ffmpeg;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "sllv", version)]
+#[command(
+    name = "sllv",
+    version,
+    about = "SLLV turns files/folders into TV-static frames and can recover them later.",
+    after_help = "Examples:\n  sllv encode -i <path> -o <frames_dir>\n  sllv encode -i <path> -o <frames_dir> --out-mkv out.mkv\n  sllv decode -i <frames_dir> -o recovered.tar\n  sllv decode -m input.mkv -o recovered.tar\n  sllv doctor --check-ffmpeg\n\nNotes:\n  - Decode always outputs a .tar file; extract it with: tar -xf recovered.tar -C out_dir\n  - Encode/decode must use the same --profile (archive vs scan)."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Command,
@@ -13,7 +18,9 @@ struct Cli {
 
 #[derive(ValueEnum, Clone, Debug)]
 enum ProfileArg {
+    /// Lossless / exact pixel path (best for storing as PNG frames or truly lossless video).
     Archive,
+    /// Robust path intended for camera/screen pipelines (deskew + FEC).
     Scan,
 }
 
@@ -28,40 +35,69 @@ impl ProfileArg {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Encode a file or folder into a directory of PNG frames (and optionally an MKV via ffmpeg).
     Encode {
-        #[arg(long)]
+        /// File/folder to encode (it will be packed into a tar internally).
+        #[arg(long, short = 'i', value_name = "PATH")]
         input: PathBuf,
-        #[arg(long)]
+
+        /// Output directory that will receive frame_000000.png, manifest.json, etc.
+        #[arg(long, short = 'o', value_name = "DIR")]
         out_frames: PathBuf,
-        #[arg(long)]
+
+        /// Optional output MKV path (FFV1 in Matroska). Requires ffmpeg.
+        #[arg(long, value_name = "FILE")]
         out_mkv: Option<PathBuf>,
+
+        /// FPS to use when writing an MKV (ignored unless --out-mkv is set).
         #[arg(long, default_value_t = 24)]
         fps: u32,
+
+        /// Preset controlling encoding/decoding parameters.
         #[arg(long, value_enum, default_value_t = ProfileArg::Archive)]
         profile: ProfileArg,
+
         /// Optional path to an ffmpeg executable (avoids needing it on PATH).
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
         ffmpeg_path: Option<PathBuf>,
     },
+
+    /// Decode a frames directory (or an MKV) back into a .tar archive.
+    #[command(
+        group = ArgGroup::new("source")
+            .required(true)
+            .args(["input_frames", "input_mkv"])
+    )]
     Decode {
-        #[arg(long)]
+        /// Directory containing frames + manifest.json.
+        #[arg(long, short = 'i', alias = "input", value_name = "DIR")]
         input_frames: Option<PathBuf>,
-        #[arg(long)]
+
+        /// Input MKV path; frames will be extracted to a temp dir first.
+        #[arg(long, short = 'm', value_name = "FILE")]
         input_mkv: Option<PathBuf>,
-        #[arg(long)]
+
+        /// Output tar file path (the recovered data is written here).
+        #[arg(long, short = 'o', value_name = "FILE")]
         out_tar: PathBuf,
+
+        /// Preset controlling decoding parameters; must match what was used for encode.
         #[arg(long, value_enum, default_value_t = ProfileArg::Archive)]
         profile: ProfileArg,
-        /// Optional path to an ffmpeg executable (avoids needing it on PATH).
-        #[arg(long)]
+
+        /// Optional path to an ffmpeg executable.
+        #[arg(long, value_name = "PATH")]
         ffmpeg_path: Option<PathBuf>,
     },
+
+    /// Print diagnostic info (and optionally verify ffmpeg is runnable).
     Doctor {
         /// Also check ffmpeg availability.
         #[arg(long)]
         check_ffmpeg: bool,
+
         /// Optional path to an ffmpeg executable.
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
         ffmpeg_path: Option<PathBuf>,
     },
 }

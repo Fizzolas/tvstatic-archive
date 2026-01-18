@@ -97,10 +97,17 @@ pub fn encode_bytes_to_frames_dir(
     let payload_bits = payload_cells * 3;
     let payload_bytes_capacity = (payload_bits / 8) as u32;
 
+    // When FEC is enabled, we reserve space for a shard header.
+    // When FEC is disabled (archive path), there is no header, so the full payload capacity is usable.
     let header_bytes = ShardHeader::BYTES as u32;
-    let max_frame_payload = payload_bytes_capacity.saturating_sub(header_bytes);
+    let max_frame_payload = if p.fec.is_some() {
+        payload_bytes_capacity.saturating_sub(header_bytes)
+    } else {
+        payload_bytes_capacity
+    };
+
     if max_frame_payload == 0 {
-        return Err(RasterError::Fec("frame too small for header".into()));
+        return Err(RasterError::Fec("frame too small for payload".into()));
     }
 
     let mut frames_written = 0u32;
@@ -273,13 +280,21 @@ pub fn decode_frames_dir_to_bytes_with_params(in_dir: &Path, p: &RasterParams) -
         }
         Ok(out)
     } else {
+        // Non-FEC (archive) path: only the first `manifest.chunk_bytes` bytes of each decoded frame are payload.
+        // This also maintains compatibility with older archives created when encode wrote fewer bytes than the
+        // full frame capacity.
+        let per_frame = manifest.chunk_bytes as usize;
+
         let mut out = Vec::with_capacity(manifest.total_bytes as usize);
         for i in start_index..manifest.frames {
             let path = in_dir.join(format!("frame_{:06}.png", i));
             let bytes = decode_frame_bytes_with_optional_deskew(&path, &manifest, p, palette)?;
-            out.extend_from_slice(&bytes);
+            let take = std::cmp::min(bytes.len(), per_frame);
+            out.extend_from_slice(&bytes[..take]);
         }
+
         out.truncate(manifest.total_bytes as usize);
+
         let mut hasher = Sha256::new();
         hasher.update(&out);
         let sha256_hex = hex::encode(hasher.finalize());
@@ -368,7 +383,7 @@ fn find_color_centroid(
     let mut n = 0u64;
 
     for y in y0..(y0 + h) {
-        for x in x0..(x0 + w) {
+        for x in x0..(y0 + 0 + w) {
             let p0 = img.get_pixel(x, y);
             let d = rgb_dist2(p0[0], p0[1], p0[2], expected.r, expected.g, expected.b);
             if d < 60_000 {
