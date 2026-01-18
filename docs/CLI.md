@@ -1,6 +1,6 @@
 # CLI reference
 
-`dist\sllv.exe` is both a standard CLI and a double‑click friendly interactive app.
+`dist\\sllv.exe` is both a standard CLI and a double‑click friendly interactive app.
 
 - When launched with no arguments (double-click), it opens an interactive menu.
 - When launched with arguments, it behaves like a normal CLI.
@@ -32,9 +32,9 @@ Optional:
 Examples:
 
 ```powershell
-.\dist\sllv.exe encode -i .\my_folder -o .\frames_archive --profile archive
-.\dist\sllv.exe encode -i .\my_folder -o .\frames_scan --profile scan
-.\dist\sllv.exe encode -i .\my_folder -o .\frames -m out.mkv --fps 24 --profile archive
+.\\dist\\sllv.exe encode -i .\\my_folder -o .\\frames_archive --profile archive
+.\\dist\\sllv.exe encode -i .\\my_folder -o .\\frames_scan --profile scan
+.\\dist\\sllv.exe encode -i .\\my_folder -o .\\frames --out-mkv out.mkv --fps 24 --profile archive
 ```
 
 ### `decode`
@@ -56,8 +56,8 @@ Required:
 Examples:
 
 ```powershell
-.\dist\sllv.exe decode -i .\frames_archive -o recovered.tar --profile archive
-.\dist\sllv.exe decode -m input.mkv -o recovered.tar --profile archive
+.\\dist\\sllv.exe decode -i .\\frames_archive -o recovered.tar --profile archive
+.\\dist\\sllv.exe decode -m input.mkv -o recovered.tar --profile archive
 ```
 
 Extract:
@@ -80,6 +80,6 @@ sllv doctor [--check-ffmpeg] [--ffmpeg-path <PATH>]
 Examples:
 
 ```powershell
-.\dist\sllv.exe doctor
-.\dist\sllv.exe doctor --check-ffmpeg
+.\\dist\\sllv.exe doctor
+.\\dist\\sllv.exe doctor --check-ffmpeg
 ```
