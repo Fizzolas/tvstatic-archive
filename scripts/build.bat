@@ -1,62 +1,35 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
+
+REM SLLV build wrapper (Windows)
+REM Prefer PowerShell for reliable output and error handling.
 
 cd /d "%~dp0\.."
 
-echo.
-echo SLLV build (Windows)
-echo ==================
-echo.
-
-where cargo >nul 2>nul
+where powershell >nul 2>nul
 if errorlevel 1 (
-  echo ERROR: Rust is not installed or cargo is not on PATH.
-  echo Fix: Install Rust from https://www.rust-lang.org/tools/install and re-open this window.
+  echo ERROR: PowerShell not found.
+  echo Fix: Use Windows PowerShell or PowerShell 7.
   goto :fail
 )
 
-if not exist dist mkdir dist
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0build.ps1" %*
+set ERR=%ERRORLEVEL%
+if not "%ERR%"=="0" goto :fail
 
-echo Building CLI...
-cargo build -p sllv-cli --release
-if errorlevel 1 goto :fail
-
-echo Building GUI...
-cargo build -p sllv-gui --release
-if errorlevel 1 goto :fail
-
-if exist target\release\sllv-cli.exe (
-  copy /y target\release\sllv-cli.exe dist\sllv.exe >nul
-) else if exist target\release\sllv.exe (
-  copy /y target\release\sllv.exe dist\sllv.exe >nul
-) else (
-  echo ERROR: Could not find CLI exe in target\release.
-  goto :fail
+REM If double-clicked (no args), keep the window open so the user can read output.
+if "%~1"=="" (
+  echo.
+  echo Press any key to close.
+  pause >nul
 )
 
-if exist target\release\sllv-gui.exe (
-  copy /y target\release\sllv-gui.exe dist\sllv-gui.exe >nul
-) else (
-  echo ERROR: Could not find GUI exe (target\release\sllv-gui.exe).
-  goto :fail
-)
-
-echo.
-echo OK: Built dist\sllv.exe and dist\sllv-gui.exe
-
-echo.
-echo Running: dist\sllv.exe doctor
-
-dist\sllv.exe doctor
-
-echo.
-echo Press any key to close.
-pause >nul
-exit /b 0
+exit /b %ERR%
 
 :fail
-echo.
-echo ERROR: Build failed. The details are above.
-echo Press any key to close.
-pause >nul
+if "%~1"=="" (
+  echo.
+  echo Build failed. Press any key to close.
+  pause >nul
+)
 exit /b 1

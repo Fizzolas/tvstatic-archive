@@ -1,48 +1,83 @@
 Param(
-  [switch]$Clean
+  [ValidateSet('all','cli','gui')][string]$Target = 'all',
+  [switch]$Clean,
+  [switch]$SkipDoctor,
+  [switch]$NoPause
 )
 
 $ErrorActionPreference = 'Stop'
 
 Set-Location (Join-Path $PSScriptRoot '..')
 
-Write-Host ""
+Write-Host "" 
 Write-Host "SLLV build (PowerShell)" -ForegroundColor Cyan
 Write-Host "======================" -ForegroundColor Cyan
-Write-Host ""
-
-if ($Clean) {
-  if (Test-Path dist) { Remove-Item dist -Recurse -Force }
-}
-
-New-Item -ItemType Directory -Force -Path dist | Out-Null
+Write-Host "" 
 
 function Pause-Exit {
   param([int]$Code)
-  Write-Host ""
-  Read-Host -Prompt "Press Enter to close"
+  if (-not $NoPause) {
+    Write-Host "" 
+    Read-Host -Prompt "Press Enter to close" | Out-Null
+  }
   exit $Code
 }
 
+function Require-Command($name, $fix) {
+  if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: '$name' not found." -ForegroundColor Red
+    Write-Host $fix -ForegroundColor Yellow
+    Pause-Exit 1
+  }
+}
+
+function Copy-Cli {
+  if (Test-Path "target/release/sllv-cli.exe") {
+    Copy-Item "target/release/sllv-cli.exe" "dist/sllv.exe" -Force
+    return
+  }
+  if (Test-Path "target/release/sllv.exe") {
+    Copy-Item "target/release/sllv.exe" "dist/sllv.exe" -Force
+    return
+  }
+  throw "Could not find CLI exe (expected target/release/sllv-cli.exe or target/release/sllv.exe)"
+}
+
+function Copy-Gui {
+  if (-not (Test-Path "target/release/sllv-gui.exe")) {
+    throw "Could not find GUI exe (expected target/release/sllv-gui.exe)"
+  }
+  Copy-Item "target/release/sllv-gui.exe" "dist/sllv-gui.exe" -Force
+}
+
 try {
-  if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Host "ERROR: Rust is not installed or cargo is not on PATH." -ForegroundColor Red
-    Write-Host "Fix: Install Rust from https://www.rust-lang.org/tools/install and re-open PowerShell." -ForegroundColor Yellow
-    Pause-Exit 1
+  if ($Clean) {
+    if (Test-Path dist) { Remove-Item dist -Recurse -Force }
+  }
+  New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+  Require-Command cargo "Fix: Install Rust from https://www.rust-lang.org/tools/install and re-open PowerShell."
+
+  if ($Target -eq 'all' -or $Target -eq 'cli') {
+    Write-Host "Building CLI..." -ForegroundColor Gray
+    cargo build -p sllv-cli --release
+    Copy-Cli
+    Write-Host "OK: Built dist\\sllv.exe" -ForegroundColor Green
   }
 
-  Write-Host "Building... (first build can take a few minutes)" -ForegroundColor Gray
-  cargo build -p sllv-cli --release
-
-  $exe = "target/release/sllv.exe"
-  if (-not (Test-Path $exe)) {
-    Write-Host "ERROR: $exe not found after build." -ForegroundColor Red
-    Pause-Exit 1
+  if ($Target -eq 'all' -or $Target -eq 'gui') {
+    Write-Host "Building GUI..." -ForegroundColor Gray
+    cargo build -p sllv-gui --release
+    Copy-Gui
+    Write-Host "OK: Built dist\\sllv-gui.exe" -ForegroundColor Green
   }
 
-  Copy-Item $exe dist/sllv.exe -Force
-  Write-Host "OK: Built dist\sllv.exe" -ForegroundColor Green
-  Write-Host "Next: dist\sllv.exe doctor" -ForegroundColor Gray
+  if (-not $SkipDoctor -and (Test-Path "dist/sllv.exe")) {
+    Write-Host "" 
+    Write-Host "Running: dist\\sllv.exe doctor" -ForegroundColor Gray
+    & .\dist\sllv.exe doctor
+  }
+
   Pause-Exit 0
 }
 catch {
