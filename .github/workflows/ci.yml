@@ -17,7 +17,10 @@ jobs:
 
     strategy:
       matrix:
-        toolchain: [stable, "1.75"]   # stable + MSRV (edition 2021 minimum)
+        # stable  — always test on the current release
+        # 1.85    — MSRV: first stable release with edition2024 support,
+        #            required by transitive deps (aligned 0.4.3, clap 4.6+)
+        toolchain: [stable, "1.85"]
 
     steps:
       - uses: actions/checkout@v4

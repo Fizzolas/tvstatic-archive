@@ -7,6 +7,12 @@ members = [
   "crates/sllv-gui",
 ]
 
+[workspace.package]
+# Minimum Supported Rust Version.  Rust 1.85 is the floor because transitive
+# deps require edition2024 (stabilised in 1.85).  Matches rust-toolchain.toml
+# and the ci.yml MSRV matrix entry — keep all three in sync when bumping.
+rust-version = "1.85"
+
 # Centralise shared dependency versions here so every crate
 # uses the same version without risk of drift.
 [workspace.dependencies]
@@ -19,10 +25,8 @@ sha2        = "0.10"
 hex         = "0.4"
 crc32fast   = "1"
 image       = "0.25"
-# Pin clap below 4.6 — clap 4.6+ requires Cargo/edition2024 which is not
-# stabilised until Rust >= 1.85.  The CI runner uses 1.75; keep this pin
-# until the toolchain is updated.
-clap        = { version = ">=4.0, <4.6", features = ["derive"] }
+# clap 4.6+ requires edition2024 (fine now that our MSRV is 1.85)
+clap        = { version = ">=4.0, <5", features = ["derive"] }
 reed-solomon-erasure = "6"
 
 [profile.release]

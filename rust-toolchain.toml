@@ -1,0 +1,7 @@
+# Minimum Supported Rust Version for tvstatic-archive.
+#
+# Rust 1.85 is required because transitive dependencies (aligned 0.4.3 and
+# clap 4.6+) use `edition = "2024"`, which was stabilised in 1.85.
+# Bumping this file is the single source of truth — ci.yml mirrors it.
+[toolchain]
+channel = "stable"
