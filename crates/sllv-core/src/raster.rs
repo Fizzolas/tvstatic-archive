@@ -296,11 +296,8 @@ pub fn encode_bytes_to_frames_dir_with_progress(
         Ok(manifest)
     } else {
         let max_payload = std::cmp::min(max_frame_payload, p.chunk_bytes) as usize;
-        let total_chunks = if max_payload == 0 {
-            0
-        } else {
-            (input_bytes.len() + max_payload - 1) / max_payload
-        };
+        // FIX: manual_checked_division + manual_div_ceil → use .div_ceil()
+        let total_chunks = input_bytes.len().div_ceil(max_payload);
 
         for (i, chunk) in input_bytes.chunks(max_payload).enumerate() {
             let mut frame_payload = vec![0u8; max_payload];
@@ -422,16 +419,15 @@ pub fn decode_frames_dir_to_bytes_with_progress(
             drop(tx_pkt);
 
             let mut packets = Vec::new();
-            let mut decoded = 0u64;
-            for maybe_pkt in rx_pkt {
+            // FIX: explicit_counter_loop → use .enumerate() on the iterator
+            for (decoded, maybe_pkt) in rx_pkt.into_iter().enumerate() {
                 if let Some(pkt) = maybe_pkt {
                     packets.push(pkt);
                 }
-                decoded += 1;
                 if let Some(ref tx) = progress_tx {
                     let _ = tx.send(ProgressMsg::Stage {
                         name: "decode".into(),
-                        done: decoded,
+                        done: (decoded + 1) as u64,
                         total: total_frames,
                     });
                 }
@@ -629,8 +625,8 @@ fn paint_cell(
 
 /// Pack `bytes` into 3-bit symbols (one per grid cell).
 fn write_3bits(bytes: &[u8], symbols: &mut [u8]) {
-    let n_syms = symbols.len();
-    for si in 0..n_syms {
+    // FIX: needless_range_loop — iterate directly with enumerate
+    for (si, slot) in symbols.iter_mut().enumerate() {
         let bit_pos = si * 3;
         let byte_idx = bit_pos / 8;
         let bit_off  = bit_pos % 8;
@@ -642,14 +638,14 @@ fn write_3bits(bytes: &[u8], symbols: &mut [u8]) {
         } else {
             0
         };
-        symbols[si] = sym;
+        *slot = sym;
     }
 }
 
 /// Extract 3-bit symbols from a decoded pixel grid back into bytes.
 fn read_3bits(symbols: &[u8], out: &mut [u8]) {
-    let n_bytes = out.len();
-    for bi in 0..n_bytes {
+    // FIX: needless_range_loop — iterate directly with enumerate
+    for (bi, slot) in out.iter_mut().enumerate() {
         let mut byte_val: u8 = 0;
         for bit in 0..8 {
             let bit_pos = bi * 8 + bit;
@@ -659,7 +655,7 @@ fn read_3bits(symbols: &[u8], out: &mut [u8]) {
             let bit_val = (sym >> (2 - bit_off)) & 1;
             byte_val = (byte_val << 1) | bit_val;
         }
-        out[bi] = byte_val;
+        *slot = byte_val;
     }
 }
 
@@ -672,13 +668,14 @@ fn decode_frame_bytes(
     let total_cells = (p.grid_w * p.grid_h) as usize;
     let mut symbols = vec![0u8; total_cells];
 
-    for cell_idx in 0..total_cells {
+    // FIX: needless_range_loop — iterate with enumerate
+    for (cell_idx, slot) in symbols.iter_mut().enumerate() {
         let cx = (cell_idx % p.grid_w as usize) as u32;
         let cy = (cell_idx / p.grid_w as usize) as u32;
         let px = cx * p.cell_px + p.cell_px / 2;
         let py = cy * p.cell_px + p.cell_px / 2;
         let pixel = img.get_pixel(px, py);
-        symbols[cell_idx] = p.palette.symbol_from_rgb_nearest(pixel[0], pixel[1], pixel[2]);
+        *slot = p.palette.symbol_from_rgb_nearest(pixel[0], pixel[1], pixel[2]);
     }
 
     let payload_cells = p.grid_w as usize * p.grid_h as usize;
@@ -737,13 +734,14 @@ fn decode_frame_bytes_inner(
     let total_cells = (p.grid_w * p.grid_h) as usize;
     let mut symbols = vec![0u8; total_cells];
 
-    for cell_idx in 0..total_cells {
+    // FIX: needless_range_loop — iterate with enumerate
+    for (cell_idx, slot) in symbols.iter_mut().enumerate() {
         let cx = (cell_idx % p.grid_w as usize) as u32;
         let cy = (cell_idx / p.grid_w as usize) as u32;
         let px = cx * p.cell_px + p.cell_px / 2;
         let py = cy * p.cell_px + p.cell_px / 2;
         let pixel = img.get_pixel(px, py);
-        symbols[cell_idx] = p.palette.symbol_from_rgb_nearest(pixel[0], pixel[1], pixel[2]);
+        *slot = p.palette.symbol_from_rgb_nearest(pixel[0], pixel[1], pixel[2]);
     }
 
     let payload_bits  = total_cells * 3;
