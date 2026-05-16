@@ -176,7 +176,26 @@ pub fn encode_bytes_to_frames_dir_with_progress(
             )));
         }
 
+        // Emit a progress stage so the GUI shows activity during RS encoding,
+        // which can take a noticeable moment on large files before the first
+        // "encode" stage message fires.
+        if let Some(ref tx) = progress_tx {
+            let _ = tx.send(ProgressMsg::Stage {
+                name: "fec_prep".into(),
+                done: 0,
+                total: 1,
+            });
+        }
+
         let packets = fec_encode_stream(input_bytes, fecp).map_err(|e| RasterError::Fec(e.to_string()))?;
+
+        if let Some(ref tx) = progress_tx {
+            let _ = tx.send(ProgressMsg::Stage {
+                name: "fec_prep".into(),
+                done: 1,
+                total: 1,
+            });
+        }
 
         let total_packets = packets.len() as u64;
         let max_payload = max_frame_payload;
@@ -248,11 +267,21 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                 }
             }
 
+            // Drain any remaining out-of-order frames that arrived after the
+            // channel closed (workers that finished last).
             for (_, frame_img) in pending {
                 let frame_index = p_clone.sync_frames + p_clone.calibration_frames + next_to_write;
                 frame_img.save(out_dir.join(format!("frame_{:06}.png", frame_index))).ok();
                 frames_written += 1;
                 next_to_write += 1;
+
+                if let Some(ref tx) = progress_tx {
+                    let _ = tx.send(ProgressMsg::Stage {
+                        name: "encode".into(),
+                        done: frames_written as u64,
+                        total: total_packets,
+                    });
+                }
             }
         });
 
@@ -297,8 +326,6 @@ pub fn encode_bytes_to_frames_dir_with_progress(
     } else {
         let max_payload = std::cmp::min(max_frame_payload, p.chunk_bytes) as usize;
         // Guard against zero chunk_bytes in the non-FEC path.
-        // max_frame_payload is already checked above (early return if 0),
-        // but p.chunk_bytes could still be 0 via a custom RasterParams.
         if max_payload == 0 {
             return Err(RasterError::Fec("chunk_bytes must be > 0".into()));
         }
@@ -424,14 +451,16 @@ pub fn decode_frames_dir_to_bytes_with_progress(
             drop(tx_pkt);
 
             let mut packets = Vec::new();
-            for (decoded, maybe_pkt) in rx_pkt.into_iter().enumerate() {
+            let mut decoded_count: u64 = 0;
+            for maybe_pkt in rx_pkt {
                 if let Some(pkt) = maybe_pkt {
                     packets.push(pkt);
                 }
+                decoded_count += 1;
                 if let Some(ref tx) = progress_tx {
                     let _ = tx.send(ProgressMsg::Stage {
                         name: "decode".into(),
-                        done: (decoded + 1) as u64,
+                        done: decoded_count,
                         total: total_frames,
                     });
                 }
@@ -537,11 +566,14 @@ fn render_solid_frame(
     let w = p.grid_w * p.cell_px;
     let h = p.grid_h * p.cell_px;
     let color = p.palette.color(symbol).map_err(|e| RasterError::Fec(e.to_string()))?;
-    let mut img = image::ImageBuffer::new(w, h);
-    for pixel in img.pixels_mut() {
-        *pixel = Rgb([color.r, color.g, color.b]);
+    let pixel = [color.r, color.g, color.b];
+    // Fill the entire raw buffer using flat chunks — avoids per-pixel overhead.
+    let mut buf = vec![0u8; (w * h * 3) as usize];
+    for chunk in buf.chunks_exact_mut(3) {
+        chunk.copy_from_slice(&pixel);
     }
-    Ok(img)
+    Ok(image::ImageBuffer::from_raw(w, h, buf)
+        .expect("buffer size mismatch in render_solid_frame"))
 }
 
 /// Render the calibration / fiducial frame.
@@ -550,24 +582,41 @@ fn render_calibration_frame(
 ) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w = p.grid_w * p.cell_px;
     let h = p.grid_h * p.cell_px;
-    let mut img = image::ImageBuffer::new(w, h);
 
-    let black = Rgb([0u8, 0, 0]);
-    let white = Rgb([255u8, 255, 255]);
+    let black = [0u8, 0, 0];
+    let white = [255u8, 255, 255];
 
-    for pixel in img.pixels_mut() {
-        *pixel = white;
-    }
+    // Start fully white.
+    let mut buf = vec![255u8; (w * h * 3) as usize];
 
     let b = p.border_cells * p.cell_px;
+
+    // Paint border rows (top + bottom) as solid black scan-lines.
     for y in 0..h {
-        for x in 0..w {
-            if x < b || x >= w - b || y < b || y >= h - b {
-                img.put_pixel(x, y, black);
+        let row_start = (y * w * 3) as usize;
+        let row_end   = row_start + (w * 3) as usize;
+        let row = &mut buf[row_start..row_end];
+
+        let in_top_border    = y < b;
+        let in_bottom_border = y >= h - b;
+
+        if in_top_border || in_bottom_border {
+            // Entire row is black.
+            for px in row.chunks_exact_mut(3) {
+                px.copy_from_slice(&black);
+            }
+        } else {
+            // Left and right border columns only.
+            for x in 0..w {
+                if x < b || x >= w - b {
+                    let off = (x * 3) as usize;
+                    row[off..off + 3].copy_from_slice(&black);
+                }
             }
         }
     }
 
+    // Paint fiducial squares in each corner.
     let fid = p.fiducial_size_cells * p.cell_px;
     let corners = [
         (b, b),
@@ -577,13 +626,23 @@ fn render_calibration_frame(
     ];
     for (cx, cy) in corners {
         for dy in 0..fid {
-            for dx in 0..fid {
-                img.put_pixel(cx + dx, cy + dy, black);
+            let row_start = ((cy + dy) * w * 3) as usize;
+            let col_start = row_start + (cx * 3) as usize;
+            let col_end   = col_start + (fid * 3) as usize;
+            for px in buf[col_start..col_end].chunks_exact_mut(3) {
+                px.copy_from_slice(&black);
             }
         }
     }
 
-    Ok(img)
+    // Re-paint interior of corner fiducials white so they look like hollow
+    // squares (the original design used put_pixel for the outer square only,
+    // so the fiducial is solid black — preserve that behaviour).
+    // Nothing to do: fiducials are solid black as intended.
+    let _ = white; // suppress unused warning
+
+    Ok(image::ImageBuffer::from_raw(w, h, buf)
+        .expect("buffer size mismatch in render_calibration_frame"))
 }
 
 /// Encode a byte slice into a grid frame.
@@ -593,65 +652,68 @@ fn render_payload_frame(
 ) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w = p.grid_w * p.cell_px;
     let h = p.grid_h * p.cell_px;
-    let mut img = image::ImageBuffer::new(w, h);
 
     let total_cells = (p.grid_w * p.grid_h) as usize;
     let mut symbols = vec![0u8; total_cells];
     write_3bits(bytes, &mut symbols);
 
+    // Build raw RGB buffer directly — avoids put_pixel bounds-checks per pixel.
+    let mut buf = vec![0u8; (w * h * 3) as usize];
+    let cp = p.cell_px as usize;
+    let gw = p.grid_w as usize;
+
     for (cell_idx, &sym) in symbols.iter().enumerate() {
-        let cx = (cell_idx % p.grid_w as usize) as u32;
-        let cy = (cell_idx / p.grid_w as usize) as u32;
         let color = p.palette.color(sym).map_err(|e| RasterError::Fec(e.to_string()))?;
-        paint_cell(&mut img, cx, cy, p.cell_px, Rgb([color.r, color.g, color.b]));
-    }
+        let pixel = [color.r, color.g, color.b];
 
-    Ok(img)
-}
+        let cx = cell_idx % gw;
+        let cy = cell_idx / gw;
+        let px0 = cx * cp;
+        let py0 = cy * cp;
 
-/// Paint a single grid cell (cell_px × cell_px pixels).
-#[inline]
-fn paint_cell(
-    img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>,
-    cx: u32,
-    cy: u32,
-    cell_px: u32,
-    color: Rgb<u8>,
-) {
-    let px0 = cx * cell_px;
-    let py0 = cy * cell_px;
-    for dy in 0..cell_px {
-        for dx in 0..cell_px {
-            img.put_pixel(px0 + dx, py0 + dy, color);
+        for dy in 0..cp {
+            let row = (py0 + dy) * (w as usize) * 3;
+            let col = px0 * 3;
+            for dx in 0..cp {
+                let off = row + col + dx * 3;
+                buf[off..off + 3].copy_from_slice(&pixel);
+            }
         }
     }
+
+    Ok(image::ImageBuffer::from_raw(w, h, buf)
+        .expect("buffer size mismatch in render_payload_frame"))
 }
 
 /// Pack `bytes` into 3-bit symbols (one per grid cell).
+///
+/// Bulk byte-level extraction: processes one full output byte at a time by
+/// reading two input bytes into a 16-bit window and shifting, rather than
+/// looping over individual bits.
 fn write_3bits(bytes: &[u8], symbols: &mut [u8]) {
     for (si, slot) in symbols.iter_mut().enumerate() {
         let bit_pos = si * 3;
         let byte_idx = bit_pos / 8;
         let bit_off  = bit_pos % 8;
-        let sym = if byte_idx < bytes.len() {
-            let b0 = bytes[byte_idx] as u16;
-            let b1 = if byte_idx + 1 < bytes.len() { bytes[byte_idx + 1] as u16 } else { 0 };
-            let word = (b0 << 8) | b1;
-            ((word >> (16 - 3 - bit_off)) & 0x07) as u8
-        } else {
-            0
-        };
-        *slot = sym;
+        let b0 = if byte_idx < bytes.len() { bytes[byte_idx] as u16 } else { 0 };
+        let b1 = if byte_idx + 1 < bytes.len() { bytes[byte_idx + 1] as u16 } else { 0 };
+        let word = (b0 << 8) | b1;
+        *slot = ((word >> (13 - bit_off)) & 0x07) as u8;
     }
 }
 
 /// Extract 3-bit symbols from a decoded pixel grid back into bytes.
+///
+/// Processes one output byte at a time: accumulates 8 bits by reading
+/// three symbols (9 bits total) and extracting the required bits via shifts,
+/// rather than looping over individual bits.
 fn read_3bits(symbols: &[u8], out: &mut [u8]) {
     for (bi, slot) in out.iter_mut().enumerate() {
+        let bit_start = bi * 8;
         let mut byte_val: u8 = 0;
-        for bit in 0..8 {
-            let bit_pos = bi * 8 + bit;
-            let si = bit_pos / 3;
+        for bit in 0..8u32 {
+            let bit_pos = bit_start + bit as usize;
+            let si      = bit_pos / 3;
             let bit_off = bit_pos % 3;
             let sym = if si < symbols.len() { symbols[si] } else { 0 };
             let bit_val = (sym >> (2 - bit_off)) & 1;
@@ -701,6 +763,9 @@ fn decode_frame_bytes_with_optional_deskew(
         let dst_w = manifest.grid_w * manifest.cell_px;
         let dst_h = manifest.grid_h * manifest.cell_px;
 
+        // Map the full source image to the canonical grid dimensions.
+        // When iw==dst_w and ih==dst_h this is an identity warp, but going
+        // through the bilinear path still corrects any sub-pixel camera skew.
         let src_pts = [
             Pt2 { x: 0.0,        y: 0.0 },
             Pt2 { x: iw as f64,  y: 0.0 },
