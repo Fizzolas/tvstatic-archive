@@ -19,9 +19,7 @@ pub struct Pt2 {
 /// Compute a homography H mapping src -> dst from exactly four point correspondences.
 ///
 /// This implements a Direct Linear Transform-style solve for 8 parameters (h33 fixed to 1).
-/// Conceptually matches common homography/warpPerspective pipelines described in OpenCV docs. [web:215]
 pub fn homography_from_4(src: [Pt2; 4], dst: [Pt2; 4]) -> Result<Matrix3<f64>, WarpError> {
-    // Unknowns: h11 h12 h13 h21 h22 h23 h31 h32 (h33=1)
     let mut a = DMatrix::<f64>::zeros(8, 8);
     let mut b = DVector::<f64>::zeros(8);
 
@@ -30,12 +28,6 @@ pub fn homography_from_4(src: [Pt2; 4], dst: [Pt2; 4]) -> Result<Matrix3<f64>, W
         let y = src[i].y;
         let u = dst[i].x;
         let v = dst[i].y;
-
-        // u = (h11 x + h12 y + h13) / (h31 x + h32 y + 1)
-        // v = (h21 x + h22 y + h23) / (h31 x + h32 y + 1)
-        // Rearranged:
-        // h11 x + h12 y + h13 - u h31 x - u h32 y = u
-        // h21 x + h22 y + h23 - v h31 x - v h32 y = v
 
         let r0 = i * 2;
         let r1 = r0 + 1;
@@ -73,10 +65,13 @@ pub fn apply_h(h: &Matrix3<f64>, p: Pt2) -> Pt2 {
     Pt2 { x: u, y: v }
 }
 
-/// Warp an RGB image using inverse mapping and nearest sampling.
+/// Warp an RGB image using inverse mapping with **bilinear interpolation**.
 ///
-/// For each destination pixel, compute source coordinate via H^{-1} and sample.
-/// This is the standard inverse-mapping approach used in perspective warps. [web:258]
+/// For each destination pixel, the source coordinate is computed via H^{-1}.
+/// Rather than rounding to nearest (which causes aliasing on camera-captured frames),
+/// we blend the four surrounding source pixels by their fractional distance.
+/// This significantly reduces colour quantization errors in the scan profile before
+/// the palette classifier runs.
 pub fn warp_perspective_nearest(
     src: &ImageBuffer<Rgb<u8>, Vec<u8>>,
     h_src_to_dst: &Matrix3<f64>,
@@ -89,19 +84,57 @@ pub fn warp_perspective_nearest(
     let sw = src.width() as i32;
     let sh = src.height() as i32;
 
-    for y in 0..dst_h {
-        for x in 0..dst_w {
-            let p = apply_h(&h_inv, Pt2 { x: x as f64, y: y as f64 });
-            let sx = p.x.round() as i32;
-            let sy = p.y.round() as i32;
-            let px = if sx >= 0 && sx < sw && sy >= 0 && sy < sh {
-                *src.get_pixel(sx as u32, sy as u32)
-            } else {
-                Rgb([0, 0, 0])
-            };
-            dst.put_pixel(x, y, px);
+    for dy in 0..dst_h {
+        for dx in 0..dst_w {
+            let p = apply_h(&h_inv, Pt2 { x: dx as f64, y: dy as f64 });
+            let px = sample_bilinear(src, p.x, p.y, sw, sh);
+            dst.put_pixel(dx, dy, px);
         }
     }
 
     Ok(dst)
+}
+
+/// Bilinear sample of an RGB image at sub-pixel (sx, sy).
+///
+/// Clamps to image bounds so no out-of-range access occurs.
+/// Falls back to black only if the source coordinate is entirely outside the image.
+#[inline]
+fn sample_bilinear(src: &ImageBuffer<Rgb<u8>, Vec<u8>>, sx: f64, sy: f64, sw: i32, sh: i32) -> Rgb<u8> {
+    // Integer floor coordinates of the top-left corner
+    let x0 = sx.floor() as i32;
+    let y0 = sy.floor() as i32;
+
+    // Quick reject: entirely outside image
+    if x0 < -1 || y0 < -1 || x0 >= sw || y0 >= sh {
+        return Rgb([0, 0, 0]);
+    }
+
+    // Fractional parts
+    let fx = (sx - sx.floor()) as f32;
+    let fy = (sy - sy.floor()) as f32;
+
+    // Clamp neighbours to valid range
+    let x1 = (x0 + 1).clamp(0, sw - 1) as u32;
+    let y1 = (y0 + 1).clamp(0, sh - 1) as u32;
+    let x0c = x0.clamp(0, sw - 1) as u32;
+    let y0c = y0.clamp(0, sh - 1) as u32;
+
+    let p00 = src.get_pixel(x0c, y0c).0;
+    let p10 = src.get_pixel(x1,  y0c).0;
+    let p01 = src.get_pixel(x0c, y1 ).0;
+    let p11 = src.get_pixel(x1,  y1 ).0;
+
+    // Lerp each channel independently
+    let lerp_ch = |c00: u8, c10: u8, c01: u8, c11: u8| -> u8 {
+        let top    = c00 as f32 * (1.0 - fx) + c10 as f32 * fx;
+        let bottom = c01 as f32 * (1.0 - fx) + c11 as f32 * fx;
+        (top * (1.0 - fy) + bottom * fy).round() as u8
+    };
+
+    Rgb([
+        lerp_ch(p00[0], p10[0], p01[0], p11[0]),
+        lerp_ch(p00[1], p10[1], p01[1], p11[1]),
+        lerp_ch(p00[2], p10[2], p01[2], p11[2]),
+    ])
 }
