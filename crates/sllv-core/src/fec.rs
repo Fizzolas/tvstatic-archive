@@ -1,3 +1,4 @@
+use reed_solomon_erasure::galois_8::ReedSolomon;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -22,6 +23,10 @@ impl Default for FecParams {
 pub enum FecError {
     #[error("invalid params")]
     InvalidParams,
+    #[error("reed-solomon error: {0}")]
+    Rs(String),
+    #[error("not enough shards to reconstruct")]
+    NotEnoughShards,
 }
 
 #[derive(Debug, Clone)]
@@ -37,40 +42,37 @@ pub fn fec_encode_stream(input: &[u8], p: &FecParams) -> Result<Vec<ShardPacket>
         return Err(FecError::InvalidParams);
     }
 
-    // Minimal, deterministic "packetization" fallback for now.
-    // This keeps the public API stable and unblocks Windows builds.
-    // Proper RS parity can be reintroduced later with correct reconstruct wiring.
-    let group_data_bytes = p.data_shards * p.shard_bytes;
+    let rs = ReedSolomon::new(p.data_shards, p.parity_shards)
+        .map_err(|e| FecError::Rs(e.to_string()))?;
 
+    let group_data_bytes = p.data_shards * p.shard_bytes;
     let mut out: Vec<ShardPacket> = Vec::new();
     let mut group_index: u32 = 0;
 
     for chunk in input.chunks(group_data_bytes) {
-        for shard_index in 0..p.data_shards {
-            let start = shard_index * p.shard_bytes;
-            let end = std::cmp::min(start + p.shard_bytes, chunk.len());
+        // Build data shards — pad the last group if needed
+        let mut shards: Vec<Vec<u8>> = (0..p.data_shards)
+            .map(|i| {
+                let start = i * p.shard_bytes;
+                let end = std::cmp::min(start + p.shard_bytes, chunk.len());
+                let mut s = vec![0u8; p.shard_bytes];
+                if start < chunk.len() {
+                    s[..(end - start)].copy_from_slice(&chunk[start..end]);
+                }
+                s
+            })
+            .collect();
 
-            let mut shard_bytes = vec![0u8; p.shard_bytes];
-            if start < chunk.len() {
-                shard_bytes[..(end - start)].copy_from_slice(&chunk[start..end]);
-            }
-
-            let mut h = Sha256::new();
-            h.update(&shard_bytes);
-            let sha: [u8; 32] = h.finalize().into();
-
-            out.push(ShardPacket {
-                group_index,
-                shard_index: shard_index as u16,
-                shard_bytes,
-                shard_sha256: sha,
-            });
+        // Append empty parity shard slots
+        for _ in 0..p.parity_shards {
+            shards.push(vec![0u8; p.shard_bytes]);
         }
 
-        // Emit parity shards as zero-filled (placeholder)
-        for parity_i in 0..p.parity_shards {
-            let shard_index = p.data_shards + parity_i;
-            let shard_bytes = vec![0u8; p.shard_bytes];
+        // Compute real RS parity
+        rs.encode(&mut shards).map_err(|e| FecError::Rs(e.to_string()))?;
+
+        // Emit all shards (data + parity)
+        for (shard_index, shard_bytes) in shards.into_iter().enumerate() {
             let mut h = Sha256::new();
             h.update(&shard_bytes);
             let sha: [u8; 32] = h.finalize().into();
@@ -89,34 +91,60 @@ pub fn fec_encode_stream(input: &[u8], p: &FecParams) -> Result<Vec<ShardPacket>
     Ok(out)
 }
 
-pub fn fec_decode_collect(packets: Vec<ShardPacket>, total_bytes: usize, p: &FecParams) -> Result<Vec<u8>, FecError> {
+pub fn fec_decode_collect(
+    packets: Vec<ShardPacket>,
+    total_bytes: usize,
+    p: &FecParams,
+) -> Result<Vec<u8>, FecError> {
     if p.data_shards == 0 || p.shard_bytes == 0 {
         return Err(FecError::InvalidParams);
     }
 
-    use std::collections::BTreeMap;
-    let mut by_group: BTreeMap<u32, Vec<Option<Vec<u8>>>> = BTreeMap::new();
+    let rs = ReedSolomon::new(p.data_shards, p.parity_shards)
+        .map_err(|e| FecError::Rs(e.to_string()))?;
 
     let total_shards = p.data_shards + p.parity_shards;
+
+    // Group packets by group_index
+    let mut by_group: std::collections::BTreeMap<u32, Vec<Option<Vec<u8>>>> =
+        std::collections::BTreeMap::new();
+
     for pkt in packets {
         let entry = by_group
             .entry(pkt.group_index)
-            .or_insert_with(|| (0..total_shards).map(|_| None).collect());
+            .or_insert_with(|| vec![None; total_shards]);
         let idx = pkt.shard_index as usize;
-        if idx < entry.len() {
-            entry[idx] = Some(pkt.shard_bytes);
+        if idx < total_shards {
+            // Validate shard integrity via SHA-256 before accepting
+            let mut h = Sha256::new();
+            h.update(&pkt.shard_bytes);
+            let sha: [u8; 32] = h.finalize().into();
+            if sha == pkt.shard_sha256 {
+                entry[idx] = Some(pkt.shard_bytes);
+            }
+            // Silently discard corrupted shards — RS will fill gaps
         }
     }
 
     let mut out: Vec<u8> = Vec::with_capacity(total_bytes);
 
-    // Fallback decode: concatenate data shards in order.
-    for (_g, shards) in by_group {
+    for (_g, mut shards) in by_group {
+        // Check how many shards are present
+        let present = shards.iter().filter(|s| s.is_some()).count();
+        if present < p.data_shards {
+            // Try RS reconstruction if we have at least data_shards total shards
+            rs.reconstruct(&mut shards)
+                .map_err(|e| FecError::Rs(e.to_string()))?;
+        }
+
+        // Concatenate data shards in order
         for i in 0..p.data_shards {
-            if let Some(bytes) = &shards[i] {
-                out.extend_from_slice(bytes);
+            match &shards[i] {
+                Some(bytes) => out.extend_from_slice(bytes),
+                None => return Err(FecError::NotEnoughShards),
             }
         }
+
         if out.len() >= total_bytes {
             break;
         }
