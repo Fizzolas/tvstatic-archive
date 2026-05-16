@@ -19,5 +19,8 @@ crc32fast = "1"
 
 nalgebra = "0.33"
 
-# Real Reed-Solomon erasure coding (replaces placeholder zero-filled parity shards)
+# Real Reed-Solomon erasure coding
 reed-solomon-erasure = { version = "6", features = ["simd-accel"] }
+
+[dev-dependencies]
+tempfile = "3"

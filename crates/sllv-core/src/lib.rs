@@ -7,6 +7,9 @@ pub mod warp;
 pub mod profile;
 pub mod ffmpeg;
 
+#[cfg(test)]
+mod tests;
+
 pub use manifest::{DecodeManifest, EncodeManifest};
 pub use palette::{Palette8, PaletteError};
 pub use raster::{
