@@ -81,16 +81,6 @@ impl Progress {
             Some(format!("{}s", remaining_secs))
         }
     }
-
-    /// Backwards-compat alias used by the old ETA code.
-    pub fn eta_secs(&self) -> Option<u64> {
-        if self.done == 0 || self.total == 0 {
-            return None;
-        }
-        let elapsed = self.started_at.elapsed().as_secs_f64();
-        let per_item = elapsed / (self.done as f64);
-        Some((self.total.saturating_sub(self.done) as f64 * per_item).round() as u64)
-    }
 }
 
 /// Maximum number of characters kept in the log before old lines are trimmed.
