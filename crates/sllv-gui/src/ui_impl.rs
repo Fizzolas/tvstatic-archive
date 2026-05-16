@@ -1,12 +1,15 @@
-use crate::state::AppState;
+use crate::state::{log_append, AppState};
 use crate::ui::{help_button, HelpTopic, Tab};
 use eframe::egui;
-use std::sync::mpsc;
+use std::sync::{
+    atomic::Ordering,
+    mpsc, Arc,
+};
 use std::thread;
 
 impl eframe::App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Poll progress channel (borrow-safe: clear receiver after the poll loop completes)
+        // Poll progress channel
         let mut clear_progress = false;
         let mut error_msg: Option<String> = None;
 
@@ -32,6 +35,7 @@ impl eframe::App for AppState {
                         self.is_running = false;
                         self.progress = None;
                         clear_progress = true;
+                        log_append(&mut self.log, "Done.\n");
                         ctx.request_repaint();
                         break;
                     }
@@ -51,7 +55,7 @@ impl eframe::App for AppState {
             self.progress_rx = None;
         }
         if let Some(e) = error_msg {
-            self.log.push_str(&format!("Error: {e}\n"));
+            log_append(&mut self.log, &format!("Error: {e}\n"));
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -69,34 +73,62 @@ impl eframe::App for AppState {
         });
 
         egui::TopBottomPanel::bottom("log").resizable(true).show(ctx, |ui| {
+            // ── Progress bar ──────────────────────────────────────────────────
             if let Some(ref prog) = self.progress {
-                ui.label(format!("Stage: {} ({}/{})", prog.stage, prog.done, prog.total));
+                ui.horizontal(|ui| {
+                    ui.label(format!("Stage: {}", prog.stage));
+                    ui.label(format!("({}/{})", prog.done, prog.total));
+                    if let Some(eta) = prog.eta_human() {
+                        ui.label(format!("ETA: {eta}"));
+                    }
+                });
                 let frac = if prog.total > 0 {
                     (prog.done as f32) / (prog.total as f32)
                 } else {
                     0.0
                 };
-                ui.add(egui::ProgressBar::new(frac).show_percentage());
-                if let Some(eta) = prog.eta_secs() {
-                    ui.label(format!("ETA: {}s", eta));
-                }
+                ui.add(egui::ProgressBar::new(frac).show_percentage().animate(true));
                 ui.separator();
             }
 
-            ui.label("Log");
-            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.log).desired_rows(6));
+            // ── Log header with action buttons ────────────────────────────────
+            ui.horizontal(|ui| {
+                ui.label("Log");
+                if ui.small_button("Copy").clicked() {
+                    ui.output_mut(|o| o.copied_text = self.log.clone());
+                }
+                if ui.small_button("Clear").clicked() {
+                    self.log.clear();
+                }
+                // Cancel button — only visible while a job is running
+                if self.is_running {
+                    ui.separator();
+                    if ui
+                        .add(egui::Button::new("⏹ Cancel").fill(egui::Color32::from_rgb(180, 50, 50)))
+                        .clicked()
+                    {
+                        self.request_cancel();
+                        log_append(&mut self.log, "Cancelling…\n");
+                    }
+                }
             });
-            if ui.button("Copy log").clicked() {
-                ui.output_mut(|o| o.copied_text = self.log.clone());
-            }
+
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.log)
+                            .desired_rows(6)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                });
         });
 
         if let Some(topic) = self.show_help {
             egui::Window::new(topic.title())
                 .collapsible(false)
                 .resizable(true)
-                .open(&mut true)
                 .show(ctx, |ui| {
                     ui.label(topic.body());
                     if ui.button("Close").clicked() {
@@ -106,6 +138,40 @@ impl eframe::App for AppState {
         }
     }
 }
+
+// ── Capacity preview helper ───────────────────────────────────────────────────
+
+/// Returns a human-readable "X bytes / frame, ~N frames for Y MB" preview string.
+fn capacity_preview(rp: &sllv_core::RasterParams) -> String {
+    let cells = (rp.grid_w as u64) * (rp.grid_h as u64);
+    let bits = cells * 3;
+    let bytes = bits / 8;
+
+    let (data_bytes, label) = if let Some(ref fec) = rp.fec {
+        let shard_payload = (fec.data_shards as u64) * (fec.shard_bytes as u64);
+        let overhead = fec.data_shards + fec.parity_shards;
+        let recoverable = fec.parity_shards;
+        (
+            shard_payload,
+            format!(
+                "{} data bytes/group, {} parity shards (can lose up to {})",
+                shard_payload, fec.parity_shards, recoverable
+            ),
+        )
+    } else {
+        (bytes, format!("{bytes} bytes/frame, no FEC"))
+    };
+
+    let frames_per_mb = if data_bytes > 0 {
+        (1_048_576.0 / data_bytes as f64).ceil() as u64
+    } else {
+        0
+    };
+
+    format!("ℹ  {label} — ~{frames_per_mb} frames/MB")
+}
+
+// ── Encode tab ────────────────────────────────────────────────────────────────
 
 fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Encode");
@@ -175,7 +241,15 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    ui.collapsing("Safe settings (keep consistent for decode)", |ui| {
+    // ── Capacity preview ──────────────────────────────────────────────────
+    ui.colored_label(
+        egui::Color32::from_rgb(120, 180, 120),
+        capacity_preview(&state.encode.rp),
+    );
+
+    ui.separator();
+
+    ui.collapsing("Settings (keep consistent for decode)", |ui| {
         ui.horizontal(|ui| {
             ui.label("Cell size (px)");
             help_button(ui, state, HelpTopic::CellPx);
@@ -197,14 +271,12 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.encode.rp.deskew, "Enable");
         });
 
-        let show_fec = state.encode.rp.fec.is_some();
-        if show_fec {
+        if state.encode.rp.fec.is_some() {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Error correction (FEC)");
                 help_button(ui, state, HelpTopic::Fec);
             });
-
             if let Some(ref mut fec) = state.encode.rp.fec {
                 ui.horizontal(|ui| {
                     ui.label("Data shards");
@@ -236,19 +308,18 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
         ));
         ui.horizontal(|ui| {
             if ui.button("Choose MKV output").clicked() {
-                state.encode.out_mkv = rfd::FileDialog::new().add_filter("Matroska", &["mkv"]).save_file();
+                state.encode.out_mkv =
+                    rfd::FileDialog::new().add_filter("Matroska", &["mkv"]).save_file();
             }
             if ui.button("Disable MKV").clicked() {
                 state.encode.out_mkv = None;
             }
         });
-
         ui.horizontal(|ui| {
             ui.label("FPS");
             help_button(ui, state, HelpTopic::Fps);
             ui.add(egui::DragValue::new(&mut state.encode.fps).clamp_range(1..=240));
         });
-
         ui.horizontal(|ui| {
             ui.label("FFmpeg path");
             help_button(ui, state, HelpTopic::Ffmpeg);
@@ -260,8 +331,10 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "(PATH)".into()),
             );
-            if ui.button("Choose ffmpeg.exe").clicked() {
-                state.encode.ffmpeg_path = rfd::FileDialog::new().add_filter("ffmpeg", &["exe"]).pick_file();
+            if ui.button("Choose ffmpeg").clicked() {
+                state.encode.ffmpeg_path = rfd::FileDialog::new()
+                    .add_filter("ffmpeg", &["exe", ""])
+                    .pick_file();
             }
             if ui.button("Clear").clicked() {
                 state.encode.ffmpeg_path = None;
@@ -272,11 +345,13 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 
     ui.add_enabled_ui(!state.is_running, |ui| {
-        if ui.button("Start encode").clicked() {
+        if ui.button("▶ Start encode").clicked() {
             spawn_encode_thread(state);
         }
     });
 }
+
+// ── Decode tab ────────────────────────────────────────────────────────────────
 
 fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Decode");
@@ -331,35 +406,37 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
                 .unwrap_or_else(|| "(not set)".into())
         ));
         if ui.button("Choose MKV file").clicked() {
-            state.decode.input_mkv = rfd::FileDialog::new().add_filter("Matroska", &["mkv"]).pick_file();
+            state.decode.input_mkv =
+                rfd::FileDialog::new().add_filter("Matroska", &["mkv"]).pick_file();
         }
-
         if ui.button("Use frames only").clicked() {
             state.decode.input_mkv = None;
         }
-        if ui.button("Use mkv only").clicked() {
+        if ui.button("Use MKV only").clicked() {
             state.decode.input_frames = None;
         }
     });
 
     ui.separator();
 
+    // ── Output — folder (auto-extract tar) or raw tar ─────────────────────
+    ui.label("Output");
     ui.label(format!(
-        "Output tar: {}",
+        "Extract to folder: {}",
         state
             .decode
-            .out_tar
+            .out_dir
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(not set)".into())
     ));
-    if ui.button("Choose output .tar").clicked() {
-        state.decode.out_tar = rfd::FileDialog::new().add_filter("tar", &["tar"]).save_file();
+    if ui.button("Choose output folder (auto-extract)").clicked() {
+        state.decode.out_dir = rfd::FileDialog::new().pick_folder();
     }
 
     ui.separator();
 
-    ui.collapsing("Safe settings (keep consistent for decode)", |ui| {
+    ui.collapsing("Settings (keep consistent with encode)", |ui| {
         ui.horizontal(|ui| {
             ui.label("Cell size (px)");
             help_button(ui, state, HelpTopic::CellPx);
@@ -381,14 +458,12 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.decode.rp.deskew, "Enable");
         });
 
-        let show_fec = state.decode.rp.fec.is_some();
-        if show_fec {
+        if state.decode.rp.fec.is_some() {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Error correction (FEC)");
                 help_button(ui, state, HelpTopic::Fec);
             });
-
             if let Some(ref mut fec) = state.decode.rp.fec {
                 ui.horizontal(|ui| {
                     ui.label("Data shards");
@@ -420,8 +495,10 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "(PATH)".into()),
             );
-            if ui.button("Choose ffmpeg.exe").clicked() {
-                state.decode.ffmpeg_path = rfd::FileDialog::new().add_filter("ffmpeg", &["exe"]).pick_file();
+            if ui.button("Choose ffmpeg").clicked() {
+                state.decode.ffmpeg_path = rfd::FileDialog::new()
+                    .add_filter("ffmpeg", &["exe", ""])
+                    .pick_file();
             }
             if ui.button("Clear").clicked() {
                 state.decode.ffmpeg_path = None;
@@ -432,43 +509,77 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 
     ui.add_enabled_ui(!state.is_running, |ui| {
-        if ui.button("Start decode").clicked() {
+        if ui.button("▶ Start decode").clicked() {
             spawn_decode_thread(state);
         }
     });
 }
 
+// ── Doctor tab ────────────────────────────────────────────────────────────────
+
 fn ui_doctor(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Doctor");
     ui.label("Checks basic things that commonly break installs.");
+    ui.separator();
 
     if ui.button("Run doctor").clicked() {
         match run_doctor() {
-            Ok(msg) => state.log.push_str(&format!("{msg}\n")),
-            Err(e) => state.log.push_str(&format!("Doctor failed: {e:#}\n")),
+            Ok(msg) => log_append(&mut state.log, &format!("{msg}\n")),
+            Err(e) => log_append(&mut state.log, &format!("Doctor failed: {e:#}\n")),
         }
     }
 }
 
 fn run_doctor() -> anyhow::Result<String> {
+    let mut out = String::new();
+
+    // Temp dir write test
     let tmp = std::env::temp_dir().join("sllv_doctor_write_test.tmp");
     std::fs::write(&tmp, b"ok")?;
     std::fs::remove_file(&tmp).ok();
-    Ok(format!("Doctor OK. Temp dir: {}", std::env::temp_dir().display()))
+    out.push_str(&format!("✓ Temp dir writable: {}\n", std::env::temp_dir().display()));
+
+    // FFmpeg availability check
+    let ffmpeg_ok = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ffmpeg_ok {
+        out.push_str("✓ ffmpeg found on PATH\n");
+    } else {
+        out.push_str("✗ ffmpeg NOT found on PATH — MKV encode/decode will fail unless you specify the path manually\n");
+    }
+
+    // ffprobe availability check
+    let ffprobe_ok = std::process::Command::new("ffprobe")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ffprobe_ok {
+        out.push_str("✓ ffprobe found on PATH (codec guard enabled)\n");
+    } else {
+        out.push_str("⚠  ffprobe not found — codec guard disabled (lossy inputs won't be rejected)\n");
+    }
+
+    Ok(out)
 }
+
+// ── Worker threads ────────────────────────────────────────────────────────────
 
 fn spawn_encode_thread(state: &mut AppState) {
     let input = match state.encode.input.as_ref() {
         Some(p) => p.clone(),
         None => {
-            state.log.push_str("Error: Input not set\n");
+            log_append(&mut state.log, "Error: Input not set\n");
             return;
         }
     };
     let out_frames = match state.encode.out_frames.as_ref() {
         Some(p) => p.clone(),
         None => {
-            state.log.push_str("Error: Output frames folder not set\n");
+            log_append(&mut state.log, "Error: Output frames folder not set\n");
             return;
         }
     };
@@ -477,22 +588,35 @@ fn spawn_encode_thread(state: &mut AppState) {
     let fps = state.encode.fps;
     let ffmpeg_path = state.encode.ffmpeg_path.clone();
     let rp = state.encode.rp.clone();
+    let cancel = Arc::clone(&state.cancel_flag);
 
     let (tx, rx) = mpsc::channel();
     state.progress_rx = Some(rx);
-    state.is_running = true;
-    state.progress = Some(crate::state::Progress {
-        stage: "starting".into(),
-        done: 0,
-        total: 1,
-        started_at: std::time::Instant::now(),
-    });
+    state.begin_job();
 
     thread::spawn(move || {
         let res = (|| -> anyhow::Result<()> {
-            let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(&input)?;
-            sllv_core::raster::encode_bytes_to_frames_dir_with_progress(&tar, &name, &out_frames, &rp, Some(tx.clone()))?;
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!("Cancelled");
+            }
+            let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(&input)
+                .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!("Cancelled");
+            }
+            sllv_core::raster::encode_bytes_to_frames_dir_with_progress(
+                &tar,
+                &name,
+                &out_frames,
+                &rp,
+                Some(tx.clone()),
+            )
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!("Cancelled");
+            }
             if let Some(out) = out_mkv {
                 sllv_core::ffmpeg::frames_to_ffv1_mkv(&out_frames, &out, fps, ffmpeg_path.as_deref())?;
             }
@@ -500,21 +624,17 @@ fn spawn_encode_thread(state: &mut AppState) {
         })();
 
         match res {
-            Ok(()) => {
-                let _ = tx.send(sllv_core::raster::ProgressMsg::Done);
-            }
-            Err(e) => {
-                let _ = tx.send(sllv_core::raster::ProgressMsg::Error(format!("{e:#}")));
-            }
+            Ok(()) => { let _ = tx.send(sllv_core::raster::ProgressMsg::Done); }
+            Err(e) => { let _ = tx.send(sllv_core::raster::ProgressMsg::Error(format!("{e:#}"))); }
         }
     });
 }
 
 fn spawn_decode_thread(state: &mut AppState) {
-    let out_tar = match state.decode.out_tar.as_ref() {
+    let out_dir = match state.decode.out_dir.as_ref() {
         Some(p) => p.clone(),
         None => {
-            state.log.push_str("Error: Output .tar not set\n");
+            log_append(&mut state.log, "Error: Output folder not set\n");
             return;
         }
     };
@@ -523,16 +643,11 @@ fn spawn_decode_thread(state: &mut AppState) {
     let input_frames = state.decode.input_frames.clone();
     let ffmpeg_path = state.decode.ffmpeg_path.clone();
     let rp = state.decode.rp.clone();
+    let cancel = Arc::clone(&state.cancel_flag);
 
     let (tx, rx) = mpsc::channel();
     state.progress_rx = Some(rx);
-    state.is_running = true;
-    state.progress = Some(crate::state::Progress {
-        stage: "starting".into(),
-        done: 0,
-        total: 1,
-        started_at: std::time::Instant::now(),
-    });
+    state.begin_job();
 
     thread::spawn(move || {
         let res = (|| -> anyhow::Result<()> {
@@ -540,6 +655,7 @@ fn spawn_decode_thread(state: &mut AppState) {
             let _temp_guard;
 
             if let Some(mkv) = input_mkv {
+                if cancel.load(Ordering::Relaxed) { anyhow::bail!("Cancelled"); }
                 let tmp = std::env::temp_dir().join(format!(
                     "sllv_gui_decode_frames_{}",
                     std::time::SystemTime::now()
@@ -558,18 +674,25 @@ fn spawn_decode_thread(state: &mut AppState) {
                 anyhow::bail!("Choose a frames folder or an MKV file");
             }
 
-            let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_progress(&frames_dir, &rp, Some(tx.clone()))?;
-            std::fs::write(&out_tar, bytes)?;
+            if cancel.load(Ordering::Relaxed) { anyhow::bail!("Cancelled"); }
+            let bytes = sllv_core::raster::decode_frames_dir_to_bytes_with_progress(
+                &frames_dir,
+                &rp,
+                Some(tx.clone()),
+            )?;
+
+            // Auto-extract the tar into out_dir
+            std::fs::create_dir_all(&out_dir)?;
+            let cursor = std::io::Cursor::new(bytes);
+            let mut archive = tar::Archive::new(cursor);
+            archive.unpack(&out_dir)?;
+
             Ok(())
         })();
 
         match res {
-            Ok(()) => {
-                let _ = tx.send(sllv_core::raster::ProgressMsg::Done);
-            }
-            Err(e) => {
-                let _ = tx.send(sllv_core::raster::ProgressMsg::Error(format!("{e:#}")));
-            }
+            Ok(()) => { let _ = tx.send(sllv_core::raster::ProgressMsg::Done); }
+            Err(e) => { let _ = tx.send(sllv_core::raster::ProgressMsg::Error(format!("{e:#}"))); }
         }
     });
 }
