@@ -296,7 +296,12 @@ pub fn encode_bytes_to_frames_dir_with_progress(
         Ok(manifest)
     } else {
         let max_payload = std::cmp::min(max_frame_payload, p.chunk_bytes) as usize;
-        // FIX: manual_checked_division + manual_div_ceil → use .div_ceil()
+        // Guard against zero chunk_bytes in the non-FEC path.
+        // max_frame_payload is already checked above (early return if 0),
+        // but p.chunk_bytes could still be 0 via a custom RasterParams.
+        if max_payload == 0 {
+            return Err(RasterError::Fec("chunk_bytes must be > 0".into()));
+        }
         let total_chunks = input_bytes.len().div_ceil(max_payload);
 
         for (i, chunk) in input_bytes.chunks(max_payload).enumerate() {
@@ -419,7 +424,6 @@ pub fn decode_frames_dir_to_bytes_with_progress(
             drop(tx_pkt);
 
             let mut packets = Vec::new();
-            // FIX: explicit_counter_loop → use .enumerate() on the iterator
             for (decoded, maybe_pkt) in rx_pkt.into_iter().enumerate() {
                 if let Some(pkt) = maybe_pkt {
                     packets.push(pkt);
@@ -625,7 +629,6 @@ fn paint_cell(
 
 /// Pack `bytes` into 3-bit symbols (one per grid cell).
 fn write_3bits(bytes: &[u8], symbols: &mut [u8]) {
-    // FIX: needless_range_loop — iterate directly with enumerate
     for (si, slot) in symbols.iter_mut().enumerate() {
         let bit_pos = si * 3;
         let byte_idx = bit_pos / 8;
@@ -644,7 +647,6 @@ fn write_3bits(bytes: &[u8], symbols: &mut [u8]) {
 
 /// Extract 3-bit symbols from a decoded pixel grid back into bytes.
 fn read_3bits(symbols: &[u8], out: &mut [u8]) {
-    // FIX: needless_range_loop — iterate directly with enumerate
     for (bi, slot) in out.iter_mut().enumerate() {
         let mut byte_val: u8 = 0;
         for bit in 0..8 {
@@ -668,7 +670,6 @@ fn decode_frame_bytes(
     let total_cells = (p.grid_w * p.grid_h) as usize;
     let mut symbols = vec![0u8; total_cells];
 
-    // FIX: needless_range_loop — iterate with enumerate
     for (cell_idx, slot) in symbols.iter_mut().enumerate() {
         let cx = (cell_idx % p.grid_w as usize) as u32;
         let cy = (cell_idx / p.grid_w as usize) as u32;
@@ -734,7 +735,6 @@ fn decode_frame_bytes_inner(
     let total_cells = (p.grid_w * p.grid_h) as usize;
     let mut symbols = vec![0u8; total_cells];
 
-    // FIX: needless_range_loop — iterate with enumerate
     for (cell_idx, slot) in symbols.iter_mut().enumerate() {
         let cx = (cell_idx % p.grid_w as usize) as u32;
         let cy = (cell_idx / p.grid_w as usize) as u32;
