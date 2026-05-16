@@ -25,8 +25,8 @@ pub enum FecError {
     InvalidParams,
     #[error("reed-solomon error: {0}")]
     Rs(String),
-    #[error("not enough shards to reconstruct")]
-    NotEnoughShards,
+    #[error("not enough shards to reconstruct (need at least {need}, have {have})")]
+    NotEnoughShards { need: usize, have: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +39,10 @@ pub struct ShardPacket {
 
 pub fn fec_encode_stream(input: &[u8], p: &FecParams) -> Result<Vec<ShardPacket>, FecError> {
     if p.data_shards == 0 || p.shard_bytes == 0 {
+        return Err(FecError::InvalidParams);
+    }
+    // Reed-Solomon over GF(2^8) supports at most 256 total shards.
+    if p.data_shards + p.parity_shards > 256 {
         return Err(FecError::InvalidParams);
     }
 
@@ -99,6 +103,9 @@ pub fn fec_decode_collect(
     if p.data_shards == 0 || p.shard_bytes == 0 {
         return Err(FecError::InvalidParams);
     }
+    if p.data_shards + p.parity_shards > 256 {
+        return Err(FecError::InvalidParams);
+    }
 
     let rs = ReedSolomon::new(p.data_shards, p.parity_shards)
         .map_err(|e| FecError::Rs(e.to_string()))?;
@@ -129,10 +136,25 @@ pub fn fec_decode_collect(
     let mut out: Vec<u8> = Vec::with_capacity(total_bytes);
 
     for (_g, mut shards) in by_group {
-        // Check how many shards are present
         let present = shards.iter().filter(|s| s.is_some()).count();
+
+        // RS over GF(2^8) requires at least `data_shards` total shards
+        // (from any mix of data + parity positions) to reconstruct the group.
+        // If we have fewer than that, reconstruction is mathematically
+        // impossible — error early with a clear message rather than letting
+        // the RS library return an opaque error.
         if present < p.data_shards {
-            // Try RS reconstruction if we have at least data_shards total shards
+            return Err(FecError::NotEnoughShards {
+                need: p.data_shards,
+                have: present,
+            });
+        }
+
+        // Only call reconstruct if one or more *data* shards are actually
+        // missing.  If all data shards are present, we skip the RS call even
+        // if some parity shards were lost — no work needed.
+        let data_complete = shards[..p.data_shards].iter().all(|s| s.is_some());
+        if !data_complete {
             rs.reconstruct(&mut shards)
                 .map_err(|e| FecError::Rs(e.to_string()))?;
         }
@@ -141,7 +163,14 @@ pub fn fec_decode_collect(
         for i in 0..p.data_shards {
             match &shards[i] {
                 Some(bytes) => out.extend_from_slice(bytes),
-                None => return Err(FecError::NotEnoughShards),
+                None => {
+                    // Should not be reachable after a successful reconstruct,
+                    // but guard defensively.
+                    return Err(FecError::NotEnoughShards {
+                        need: p.data_shards,
+                        have: present,
+                    });
+                }
             }
         }
 
