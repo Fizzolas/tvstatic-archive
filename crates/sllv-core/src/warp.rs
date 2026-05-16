@@ -72,7 +72,9 @@ pub fn apply_h(h: &Matrix3<f64>, p: Pt2) -> Pt2 {
 /// we blend the four surrounding source pixels by their fractional distance.
 /// This significantly reduces colour quantization errors in the scan profile before
 /// the palette classifier runs.
-pub fn warp_perspective_nearest(
+///
+/// Previously named `warp_perspective_nearest` — renamed to match actual behaviour.
+pub fn warp_perspective_bilinear(
     src: &ImageBuffer<Rgb<u8>, Vec<u8>>,
     h_src_to_dst: &Matrix3<f64>,
     dst_w: u32,
