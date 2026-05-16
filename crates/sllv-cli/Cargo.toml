@@ -7,3 +7,4 @@ edition = "2021"
 anyhow    = { workspace = true }
 clap      = { workspace = true }
 sllv-core = { path = "../sllv-core" }
+tar       = "0.4"

@@ -1,6 +1,6 @@
 use crate::fec::{fec_decode_collect, fec_encode_stream, FecParams, ShardPacket};
 use crate::manifest::EncodeManifest;
-use crate::palette::{Palette8, Rgb8};
+use crate::palette::Palette8;
 use crate::warp::{homography_from_4, warp_perspective_bilinear, Pt2};
 use image::Rgb;
 use serde_json::json;
@@ -147,8 +147,6 @@ pub fn encode_bytes_to_frames_dir_with_progress(
     let mut frames_written = 0u32;
 
     if let Some(fecp) = &p.fec {
-        // Bug fix: empty input_bytes produces zero packets — skip FEC encode entirely
-        // and fall through to writing a manifest with 0 data frames.
         if input_bytes.is_empty() {
             let manifest = EncodeManifest {
                 magic: EncodeManifest::MAGIC.to_string(),
@@ -170,8 +168,6 @@ pub fn encode_bytes_to_frames_dir_with_progress(
             return Ok(manifest);
         }
 
-        // Bug fix: validate shard_bytes vs frame capacity before spawning threads
-        // (previously this returned an Err inside thread::scope which could not propagate cleanly)
         if fecp.shard_bytes as u32 > max_frame_payload {
             return Err(RasterError::Fec(format!(
                 "fec shard_bytes {} exceeds frame payload capacity {} — \
@@ -513,12 +509,12 @@ impl ShardHeader {
     }
 
     fn from_bytes(b: &[u8]) -> Self {
-        let group_index    = u32::from_le_bytes(b[0..4].try_into().unwrap());
-        let shard_index    = u16::from_le_bytes(b[4..6].try_into().unwrap());
-        let shard_len      = u16::from_le_bytes(b[6..8].try_into().unwrap());
+        let group_index      = u32::from_le_bytes(b[0..4].try_into().unwrap());
+        let shard_index      = u16::from_le_bytes(b[4..6].try_into().unwrap());
+        let shard_len        = u16::from_le_bytes(b[6..8].try_into().unwrap());
         let orig_total_bytes = u64::from_le_bytes(b[8..16].try_into().unwrap());
         let shard_sha256: [u8; 32] = b[16..48].try_into().unwrap();
-        let header_crc32   = u32::from_le_bytes(b[48..52].try_into().unwrap());
+        let header_crc32     = u32::from_le_bytes(b[48..52].try_into().unwrap());
         Self { group_index, shard_index, shard_len, orig_total_bytes, shard_sha256, header_crc32 }
     }
 
@@ -559,12 +555,10 @@ fn render_calibration_frame(
     let black = Rgb([0u8, 0, 0]);
     let white = Rgb([255u8, 255, 255]);
 
-    // Fill background white
     for pixel in img.pixels_mut() {
         *pixel = white;
     }
 
-    // Draw a black border
     let b = p.border_cells * p.cell_px;
     for y in 0..h {
         for x in 0..w {
@@ -574,7 +568,6 @@ fn render_calibration_frame(
         }
     }
 
-    // Draw fiducial squares at the four corners (inside the border)
     let fid = p.fiducial_size_cells * p.cell_px;
     let corners = [
         (b, b),
@@ -707,7 +700,6 @@ fn decode_frame_bytes_with_optional_deskew(
         let img = image::open(path)?.into_rgb8();
         let (iw, ih) = (img.width(), img.height());
 
-        // Map the whole image to a canonical grid_w*cell_px × grid_h*cell_px canvas.
         let dst_w = manifest.grid_w * manifest.cell_px;
         let dst_h = manifest.grid_h * manifest.cell_px;
 
@@ -718,10 +710,10 @@ fn decode_frame_bytes_with_optional_deskew(
             Pt2 { x: 0.0,        y: ih as f64 },
         ];
         let dst_pts = [
-            Pt2 { x: 0.0,         y: 0.0 },
+            Pt2 { x: 0.0,          y: 0.0 },
             Pt2 { x: dst_w as f64, y: 0.0 },
             Pt2 { x: dst_w as f64, y: dst_h as f64 },
-            Pt2 { x: 0.0,         y: dst_h as f64 },
+            Pt2 { x: 0.0,          y: dst_h as f64 },
         ];
 
         let h = homography_from_4(src_pts, dst_pts)
@@ -768,8 +760,6 @@ fn detect_data_start(
     _p: &RasterParams,
     _palette: Palette8,
 ) -> u32 {
-    // For now, trust the manifest's sync + calibration frame counts.
-    // A future version could scan pixel values to auto-detect the boundary.
     let _ = in_dir;
     manifest.frames.saturating_sub(
         manifest.frames.saturating_sub(manifest.fec_data_shards + manifest.fec_parity_shards)
