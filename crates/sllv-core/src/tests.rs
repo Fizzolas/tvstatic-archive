@@ -154,12 +154,6 @@ mod round_trip {
         encode_bytes_to_frames_dir(&data, "loss_test.bin", &out_dir, &p)
             .expect("encode failed");
 
-        // Collect all frame files, sort them, and delete the last `parity` of
-        // them.  Since frames are named frame_NNNNNN.png, the last N frames
-        // correspond to parity shards (by convention they're appended after
-        // data shards in the FEC group).  Even if that's not exactly true, the
-        // RS decoder should recover as long as we drop no more than `parity`
-        // frames total across the whole stream.
         let mut frames: Vec<_> = std::fs::read_dir(&out_dir)
             .expect("read_dir")
             .filter_map(|e| e.ok())
@@ -168,7 +162,6 @@ mod round_trip {
             .collect();
         frames.sort();
 
-        // Drop up to `parity` frames from the tail
         let drop_count = parity.min(frames.len());
         for f in frames.iter().rev().take(drop_count) {
             std::fs::remove_file(f).expect("remove frame");
@@ -191,9 +184,10 @@ mod round_trip {
     #[test]
     fn round_trip_3bit_boundary_sizes() {
         let p = RasterParams { fec: None, deskew: false, ..RasterParams::default() };
-        // 3 bytes = 8 symbols exactly, 5 bytes = 13 symbols (crosses several boundaries)
-        for size in [1, 2, 3, 5, 7, 8, 9, 15, 16, 24, 100, 333] {
-            let data: Vec<u8> = (0u8..).take(size).collect();
+        // 3 bytes = 8 symbols exactly, 5 bytes = 13 symbols (crosses several boundaries).
+        // Cast through u16 then truncate so sizes > 255 don't overflow u8.
+        for size in [1usize, 2, 3, 5, 7, 8, 9, 15, 16, 24, 100, 333] {
+            let data: Vec<u8> = (0u16..).take(size).map(|v| v as u8).collect();
             round_trip(&data, p.clone());
         }
     }
