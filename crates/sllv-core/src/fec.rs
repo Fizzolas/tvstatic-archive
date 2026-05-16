@@ -41,7 +41,6 @@ pub fn fec_encode_stream(input: &[u8], p: &FecParams) -> Result<Vec<ShardPacket>
     if p.data_shards == 0 || p.shard_bytes == 0 {
         return Err(FecError::InvalidParams);
     }
-    // Reed-Solomon over GF(2^8) supports at most 256 total shards.
     if p.data_shards + p.parity_shards > 256 {
         return Err(FecError::InvalidParams);
     }
@@ -54,7 +53,6 @@ pub fn fec_encode_stream(input: &[u8], p: &FecParams) -> Result<Vec<ShardPacket>
     let mut group_index: u32 = 0;
 
     for chunk in input.chunks(group_data_bytes) {
-        // Build data shards — pad the last group if needed
         let mut shards: Vec<Vec<u8>> = (0..p.data_shards)
             .map(|i| {
                 let start = i * p.shard_bytes;
@@ -67,15 +65,12 @@ pub fn fec_encode_stream(input: &[u8], p: &FecParams) -> Result<Vec<ShardPacket>
             })
             .collect();
 
-        // Append empty parity shard slots
         for _ in 0..p.parity_shards {
             shards.push(vec![0u8; p.shard_bytes]);
         }
 
-        // Compute real RS parity
         rs.encode(&mut shards).map_err(|e| FecError::Rs(e.to_string()))?;
 
-        // Emit all shards (data + parity)
         for (shard_index, shard_bytes) in shards.into_iter().enumerate() {
             let mut h = Sha256::new();
             h.update(&shard_bytes);
@@ -112,7 +107,6 @@ pub fn fec_decode_collect(
 
     let total_shards = p.data_shards + p.parity_shards;
 
-    // Group packets by group_index
     let mut by_group: std::collections::BTreeMap<u32, Vec<Option<Vec<u8>>>> =
         std::collections::BTreeMap::new();
 
@@ -122,14 +116,12 @@ pub fn fec_decode_collect(
             .or_insert_with(|| vec![None; total_shards]);
         let idx = pkt.shard_index as usize;
         if idx < total_shards {
-            // Validate shard integrity via SHA-256 before accepting
             let mut h = Sha256::new();
             h.update(&pkt.shard_bytes);
             let sha: [u8; 32] = h.finalize().into();
             if sha == pkt.shard_sha256 {
                 entry[idx] = Some(pkt.shard_bytes);
             }
-            // Silently discard corrupted shards — RS will fill gaps
         }
     }
 
@@ -138,11 +130,6 @@ pub fn fec_decode_collect(
     for (_g, mut shards) in by_group {
         let present = shards.iter().filter(|s| s.is_some()).count();
 
-        // RS over GF(2^8) requires at least `data_shards` total shards
-        // (from any mix of data + parity positions) to reconstruct the group.
-        // If we have fewer than that, reconstruction is mathematically
-        // impossible — error early with a clear message rather than letting
-        // the RS library return an opaque error.
         if present < p.data_shards {
             return Err(FecError::NotEnoughShards {
                 need: p.data_shards,
@@ -150,22 +137,17 @@ pub fn fec_decode_collect(
             });
         }
 
-        // Only call reconstruct if one or more *data* shards are actually
-        // missing.  If all data shards are present, we skip the RS call even
-        // if some parity shards were lost — no work needed.
         let data_complete = shards[..p.data_shards].iter().all(|s| s.is_some());
         if !data_complete {
             rs.reconstruct(&mut shards)
                 .map_err(|e| FecError::Rs(e.to_string()))?;
         }
 
-        // Concatenate data shards in order
-        for i in 0..p.data_shards {
-            match &shards[i] {
+        // Concatenate data shards — iterate directly to avoid needless_range_loop
+        for shard in shards.iter().take(p.data_shards) {
+            match shard {
                 Some(bytes) => out.extend_from_slice(bytes),
                 None => {
-                    // Should not be reachable after a successful reconstruct,
-                    // but guard defensively.
                     return Err(FecError::NotEnoughShards {
                         need: p.data_shards,
                         have: present,
