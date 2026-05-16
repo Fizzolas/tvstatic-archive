@@ -158,8 +158,10 @@ pub fn encode_bytes_to_frames_dir_with_progress(
 
         let total_packets = packets.len() as u64;
 
-        // Parallel frame generation with bounded queue
-        let (tx_img, rx_img) = mpsc::sync_channel::<(u32, image::ImageBuffer<Rgb<u8>, Vec<u8>>)>(16);
+        // FIX: use an ordered channel — workers send (frame_index, img) tuples and the
+        // writer collects them into a BTreeMap keyed by frame_index so frames are always
+        // saved in the correct order regardless of which worker thread finishes first.
+        let (tx_img, rx_img) = mpsc::sync_channel::<(u32, image::ImageBuffer<Rgb<u8>, Vec<u8>>)>(32);
         let packets_arc = Arc::new(packets);
         let p_clone = p.clone();
         let max_payload = max_frame_payload;
@@ -169,7 +171,7 @@ pub fn encode_bytes_to_frames_dir_with_progress(
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         std::thread::scope(|s| {
-            // Worker threads: render frames
+            // Worker threads: render frames in parallel
             for _ in 0..num_workers {
                 let tx = tx_img.clone();
                 let pkts = Arc::clone(&packets_arc);
@@ -201,25 +203,47 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                         padded[..frame_bytes.len()].copy_from_slice(&frame_bytes);
 
                         if let Ok(img) = render_payload_frame(&padded, &params) {
-                            let frame_index = params.sync_frames + params.calibration_frames + (idx as u32);
-                            let _ = tx.send((frame_index, img));
+                            // Include the logical packet index so the writer can sort
+                            let _ = tx.send((idx as u32, img));
                         }
                     }
                 });
             }
             drop(tx_img);
 
-            // Writer thread: save to disk
-            for (frame_idx, img) in rx_img {
-                img.save(out_dir.join(format!("frame_{:06}.png", frame_idx))).ok();
-                frames_written += 1;
-                if let Some(ref tx) = progress_tx {
-                    let _ = tx.send(ProgressMsg::Stage {
-                        name: "encode".into(),
-                        done: frames_written as u64,
-                        total: total_packets,
-                    });
+            // Writer thread: collect into a sorted map, then flush in order.
+            // This guarantees frame_XXXXXX.png filenames match their logical position
+            // even when worker threads finish out-of-order.
+            use std::collections::BTreeMap;
+            let mut pending: BTreeMap<u32, image::ImageBuffer<Rgb<u8>, Vec<u8>>> = BTreeMap::new();
+            let mut next_to_write: u32 = 0;
+
+            for (pkt_idx, img) in rx_img {
+                pending.insert(pkt_idx, img);
+
+                // Flush any contiguous run we now have
+                while let Some(frame_img) = pending.remove(&next_to_write) {
+                    let frame_index = p_clone.sync_frames + p_clone.calibration_frames + next_to_write;
+                    frame_img.save(out_dir.join(format!("frame_{:06}.png", frame_index))).ok();
+                    frames_written += 1;
+                    next_to_write += 1;
+
+                    if let Some(ref tx) = progress_tx {
+                        let _ = tx.send(ProgressMsg::Stage {
+                            name: "encode".into(),
+                            done: frames_written as u64,
+                            total: total_packets,
+                        });
+                    }
                 }
+            }
+
+            // Flush any remaining frames (shouldn't happen in normal flow)
+            for (_, frame_img) in pending {
+                let frame_index = p_clone.sync_frames + p_clone.calibration_frames + next_to_write;
+                frame_img.save(out_dir.join(format!("frame_{:06}.png", frame_index))).ok();
+                frames_written += 1;
+                next_to_write += 1;
             }
         });
 
@@ -568,7 +592,7 @@ fn decode_payload_from_rgb(
             let p0 = img.get_pixel(px, py);
 
             let sym = palette.symbol_from_rgb_nearest(p0[0], p0[1], p0[2]);
-            write_3bits(&mut payload, bit_i, sym);
+            write_3bits_fast(&mut payload, bit_i, sym);
             bit_i += 3;
 
             if (bit_i / 8) >= payload.len() {
@@ -706,12 +730,16 @@ fn full_grid_h(p: &RasterParams) -> u32 {
     p.grid_h + 2 * p.border_cells
 }
 
+/// Render a payload frame. Cells are filled using bulk scan-line writes instead of
+/// one put_pixel call per sub-pixel — this avoids the bounds-checking overhead on
+/// every individual pixel and is measurably faster for large grids.
 fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
 
     let mut img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = image::ImageBuffer::new(w_px, h_px);
 
+    // Border cells (checkerboard pattern)
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
             let in_payload = x >= p.border_cells
@@ -721,27 +749,27 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::Image
             if !in_payload {
                 let sym = if ((x ^ y) & 1) == 0 { 0 } else { 1 };
                 let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
-                paint_cell(&mut img, x, y, p.cell_px, r, g, b);
+                paint_cell_fast(&mut img, x, y, p.cell_px, r, g, b);
             }
         }
     }
 
     draw_corner_fiducials(&mut img, p);
 
-    let mut bit_i = 0usize;
+    // Payload cells: extract all 3-bit symbols in bulk then paint
+    let symbols = unpack_3bit_symbols(payload, (p.grid_w * p.grid_h) as usize);
+    let mut sym_i = 0usize;
     for y in 0..p.grid_h {
         for x in 0..p.grid_w {
-            let sym = read_3bits(payload, bit_i);
-            bit_i += 3;
+            let sym = symbols[sym_i];
+            sym_i += 1;
             let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
-            paint_cell(
+            paint_cell_fast(
                 &mut img,
                 x + p.border_cells,
                 y + p.border_cells,
                 p.cell_px,
-                r,
-                g,
-                b,
+                r, g, b,
             );
         }
     }
@@ -763,27 +791,24 @@ fn draw_l(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, x0: u32, y0: u32, s: u
     let c = Palette8::Basic.color(sym).unwrap();
 
     for y in y0..(y0 + s) {
-        paint_cell(img, x0, y, cell_px, c.r, c.g, c.b);
-        paint_cell(img, x0 + 1, y, cell_px, c.r, c.g, c.b);
+        paint_cell_fast(img, x0, y, cell_px, c.r, c.g, c.b);
+        paint_cell_fast(img, x0 + 1, y, cell_px, c.r, c.g, c.b);
     }
 
     for x in x0..(x0 + s) {
-        paint_cell(img, x, y0, cell_px, c.r, c.g, c.b);
-        paint_cell(img, x, y0 + 1, cell_px, c.r, c.g, c.b);
+        paint_cell_fast(img, x, y0, cell_px, c.r, c.g, c.b);
+        paint_cell_fast(img, x, y0 + 1, cell_px, c.r, c.g, c.b);
     }
 }
 
 fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
-    let mut img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = image::ImageBuffer::new(w_px, h_px);
     let Rgb8 { r, g, b } = p.palette.color(symbol).unwrap();
-    for y in 0..full_grid_h(p) {
-        for x in 0..full_grid_w(p) {
-            paint_cell(&mut img, x, y, p.cell_px, r, g, b);
-        }
-    }
-    Ok(img)
+    // Fill the entire frame in one raw-buffer pass
+    let pixel = [r, g, b];
+    let raw: Vec<u8> = pixel.iter().cycle().take((w_px * h_px * 3) as usize).cloned().collect();
+    Ok(image::ImageBuffer::from_raw(w_px, h_px, raw).expect("buffer size mismatch"))
 }
 
 fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
@@ -800,7 +825,7 @@ fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u
             if !in_payload {
                 let sym = if ((x ^ y) & 1) == 0 { 0 } else { 1 };
                 let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
-                paint_cell(&mut img, x, y, p.cell_px, r, g, b);
+                paint_cell_fast(&mut img, x, y, p.cell_px, r, g, b);
             }
         }
     }
@@ -809,7 +834,7 @@ fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u
 
     for y in 0..p.grid_h {
         for x in 0..p.grid_w {
-            paint_cell(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, 0, 0, 0);
+            paint_cell_fast(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, 0, 0, 0);
         }
     }
 
@@ -820,7 +845,7 @@ fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u
         let x1 = std::cmp::min(p.grid_w, x0 + block_w);
         for y in 0..std::cmp::min(4, p.grid_h) {
             for x in x0..x1 {
-                paint_cell(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, r, g, b);
+                paint_cell_fast(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, r, g, b);
             }
         }
     }
@@ -829,47 +854,88 @@ fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u
         for x in 0..p.grid_w {
             let sym = if ((x ^ y) & 1) == 0 { 1 } else { 0 };
             let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
-            paint_cell(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, r, g, b);
+            paint_cell_fast(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, r, g, b);
         }
     }
 
     Ok(img)
 }
 
-fn paint_cell(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, x: u32, y: u32, cell_px: u32, r: u8, g: u8, b: u8) {
-    let x0 = x * cell_px;
-    let y0 = y * cell_px;
+/// Paint a cell by writing directly into the raw pixel buffer scan-line by scan-line.
+/// Avoids the per-pixel bounds-check overhead of put_pixel in the inner loop.
+#[inline]
+fn paint_cell_fast(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, cx: u32, cy: u32, cell_px: u32, r: u8, g: u8, b: u8) {
+    let img_w = img.width();
+    let raw = img.as_mut();
+    let x0 = cx * cell_px;
+    let y0 = cy * cell_px;
     for dy in 0..cell_px {
+        let row_start = ((y0 + dy) * img_w + x0) as usize * 3;
         for dx in 0..cell_px {
-            img.put_pixel(x0 + dx, y0 + dy, Rgb([r, g, b]));
+            let off = row_start + dx as usize * 3;
+            raw[off] = r;
+            raw[off + 1] = g;
+            raw[off + 2] = b;
         }
     }
 }
 
-fn read_3bits(bytes: &[u8], bit_i: usize) -> u8 {
-    let mut v = 0u8;
-    for k in 0..3 {
-        let i = bit_i + k;
-        let b = bytes.get(i / 8).copied().unwrap_or(0);
-        let bit = (b >> (i % 8)) & 1;
-        v |= (bit as u8) << k;
-    }
-    v
-}
+/// Unpack `count` 3-bit symbols from a packed byte slice in a single pass.
+/// Processes bits LSB-first to match the original write_3bits encoding.
+/// This replaces the old read_3bits loop that called back per-bit into the slice.
+#[inline]
+fn unpack_3bit_symbols(bytes: &[u8], count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(count);
+    let mut bit_i = 0usize;
+    for _ in 0..count {
+        // Read 3 bits starting at bit_i, LSB-first
+        let byte0 = bit_i / 8;
+        let bit_off = bit_i % 8;
 
-fn write_3bits(bytes: &mut [u8], bit_i: usize, sym: u8) {
-    for k in 0..3 {
-        let i = bit_i + k;
-        let byte_i = i / 8;
-        if byte_i >= bytes.len() {
-            return;
-        }
-        let bit = (sym >> k) & 1;
-        let mask = 1u8 << (i % 8);
-        if bit == 1 {
-            bytes[byte_i] |= mask;
+        let sym = if bit_off <= 5 {
+            // All 3 bits fit inside one byte
+            (bytes.get(byte0).copied().unwrap_or(0) >> bit_off) & 0x07
         } else {
-            bytes[byte_i] &= !mask;
+            // Spans two bytes
+            let lo = bytes.get(byte0).copied().unwrap_or(0);
+            let hi = bytes.get(byte0 + 1).copied().unwrap_or(0);
+            let bits_in_first = 8 - bit_off;
+            let from_first = (lo >> bit_off) & ((1 << bits_in_first) - 1);
+            let from_second = hi & ((1 << (3 - bits_in_first)) - 1);
+            from_first | (from_second << bits_in_first)
+        };
+
+        out.push(sym);
+        bit_i += 3;
+    }
+    out
+}
+
+/// Write a 3-bit symbol at bit position bit_i in a packed byte buffer, LSB-first.
+/// Used during decode to reassemble payload bytes from sampled grid symbols.
+#[inline]
+fn write_3bits_fast(bytes: &mut [u8], bit_i: usize, sym: u8) {
+    let byte0 = bit_i / 8;
+    let bit_off = bit_i % 8;
+
+    if bit_off <= 5 {
+        // All 3 bits fit in one byte
+        if byte0 < bytes.len() {
+            let mask = 0x07u8 << bit_off;
+            bytes[byte0] = (bytes[byte0] & !mask) | ((sym & 0x07) << bit_off);
+        }
+    } else {
+        // Spans two bytes
+        let bits_in_first = 8 - bit_off;
+        let mask0 = !((1u8 << bit_off).wrapping_sub(1) ^ 0xFF) & 0xFF; // upper bits of byte0
+        let mask0 = ((0xFF as u8) << bit_off); // bits [7:bit_off] in byte0
+        if byte0 < bytes.len() {
+            bytes[byte0] = (bytes[byte0] & !mask0) | ((sym & ((1 << bits_in_first) - 1)) << bit_off);
+        }
+        if byte0 + 1 < bytes.len() {
+            let bits_in_second = 3 - bits_in_first;
+            let mask1 = (1u8 << bits_in_second) - 1;
+            bytes[byte0 + 1] = (bytes[byte0 + 1] & !mask1) | ((sym >> bits_in_first) & mask1);
         }
     }
 }
