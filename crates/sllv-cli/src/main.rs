@@ -99,6 +99,32 @@ fn main() -> anyhow::Result<()> {
             profile,
             ffmpeg_path,
         } => {
+            // --- pre-flight checks -------------------------------------------
+
+            // Friendly error if the input path doesn't exist, before any work
+            // starts.  pack_path_to_tar_bytes would also catch this, but its
+            // error message is less readable.
+            if !input.exists() {
+                anyhow::bail!("Input path does not exist: {}", input.display());
+            }
+
+            // Refuse to encode into an existing non-empty frames directory.
+            // Stale frames from a prior run would mix with the new ones and
+            // cause SHA-256 failures on decode with no obvious explanation.
+            if out_frames.exists() {
+                let is_empty = std::fs::read_dir(&out_frames)
+                    .map(|mut d| d.next().is_none())
+                    .unwrap_or(false);
+                if !is_empty {
+                    anyhow::bail!(
+                        "Output frames directory already exists and is not empty: {}\n\
+                         Remove it or choose a different path to avoid mixing stale frames.",
+                        out_frames.display()
+                    );
+                }
+            }
+
+            // --- encode -------------------------------------------------------
             let (tar, name) = sllv_core::pack::pack_path_to_tar_bytes(&input).context("pack input")?;
             let rp = profile.to_profile().defaults();
 
@@ -119,10 +145,6 @@ fn main() -> anyhow::Result<()> {
             profile,
             ffmpeg_path,
         } => {
-            // Bug fix: temp frames directory was previously placed adjacent to the
-            // output tar file.  Now that the output is a directory, we use the
-            // system temp dir instead so there is no accidental collision and the
-            // temp dir is cleaned up even if decoding fails.
             let (frames_dir, _tmp_guard): (PathBuf, Option<TempDirCleanup>) =
                 if let Some(frames) = input_frames {
                     (frames, None)
@@ -174,11 +196,6 @@ fn run_doctor(check_ffmpeg: bool, ffmpeg_path: Option<&Path>) -> anyhow::Result<
 
     if check_ffmpeg {
         let ffmpeg_bin = ffmpeg_path.unwrap_or(Path::new("ffmpeg"));
-        // Bug fix: the old code ran mkv_to_frames on a nonexistent file and
-        // checked whether the error message contained "not found".  That
-        // heuristic incorrectly reported ffmpeg as "ok" when ffmpeg existed but
-        // the nonexistent file error did not match the expected string.
-        // Now we just probe with -version which is unambiguous.
         let ok = std::process::Command::new(ffmpeg_bin)
             .arg("-version")
             .output()
