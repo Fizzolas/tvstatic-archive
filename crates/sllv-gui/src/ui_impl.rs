@@ -149,7 +149,7 @@ fn capacity_preview(rp: &sllv_core::RasterParams) -> String {
 
     let (data_bytes, label) = if let Some(ref fec) = rp.fec {
         let shard_payload = (fec.data_shards as u64) * (fec.shard_bytes as u64);
-        let overhead = fec.data_shards + fec.parity_shards;
+        let _overhead = fec.data_shards + fec.parity_shards;
         let recoverable = fec.parity_shards;
         (
             shard_payload,
@@ -194,7 +194,7 @@ fn ui_encode(ui: &mut egui::Ui, state: &mut AppState) {
         } else {
             sllv_core::Profile::Scan
         };
-        if new_profile.name() != state.encode.profile.name() {
+        if new_profile != state.encode.profile {
             state.encode.profile = new_profile;
             state.encode.rp = new_profile.defaults();
         }
@@ -374,7 +374,7 @@ fn ui_decode(ui: &mut egui::Ui, state: &mut AppState) {
         } else {
             sllv_core::Profile::Scan
         };
-        if new_profile.name() != state.decode.profile.name() {
+        if new_profile != state.decode.profile {
             state.decode.profile = new_profile;
             state.decode.rp = new_profile.defaults();
         }

@@ -9,6 +9,6 @@ fn main() {
     let _ = eframe::run_native(
         "SLLV GUI",
         native_options,
-        Box::new(|_cc| Ok(Box::new(AppState::default()))),
+        Box::new(|_cc| Ok(Box::new(AppState::default()) as Box<dyn eframe::App>)),
     );
 }
