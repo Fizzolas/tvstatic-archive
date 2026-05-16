@@ -540,7 +540,7 @@ fn render_solid_frame(
 ) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w = p.grid_w * p.cell_px;
     let h = p.grid_h * p.cell_px;
-    let color = p.palette.color(symbol);
+    let color = p.palette.color(symbol).map_err(|e| RasterError::Fec(e.to_string()))?;
     let mut img = image::ImageBuffer::new(w, h);
     for pixel in img.pixels_mut() {
         *pixel = Rgb([color.r, color.g, color.b]);
@@ -609,7 +609,7 @@ fn render_payload_frame(
     for (cell_idx, &sym) in symbols.iter().enumerate() {
         let cx = (cell_idx % p.grid_w as usize) as u32;
         let cy = (cell_idx / p.grid_w as usize) as u32;
-        let color = p.palette.color(sym);
+        let color = p.palette.color(sym).map_err(|e| RasterError::Fec(e.to_string()))?;
         paint_cell(&mut img, cx, cy, p.cell_px, Rgb([color.r, color.g, color.b]));
     }
 
@@ -685,7 +685,7 @@ fn decode_frame_bytes(
         let px = cx * p.cell_px + p.cell_px / 2;
         let py = cy * p.cell_px + p.cell_px / 2;
         let pixel = img.get_pixel(px, py);
-        symbols[cell_idx] = p.palette.classify(Rgb8 { r: pixel[0], g: pixel[1], b: pixel[2] });
+        symbols[cell_idx] = p.palette.symbol_from_rgb_nearest(pixel[0], pixel[1], pixel[2]);
     }
 
     let payload_cells = p.grid_w as usize * p.grid_h as usize;
@@ -751,7 +751,7 @@ fn decode_frame_bytes_inner(
         let px = cx * p.cell_px + p.cell_px / 2;
         let py = cy * p.cell_px + p.cell_px / 2;
         let pixel = img.get_pixel(px, py);
-        symbols[cell_idx] = p.palette.classify(Rgb8 { r: pixel[0], g: pixel[1], b: pixel[2] });
+        symbols[cell_idx] = p.palette.symbol_from_rgb_nearest(pixel[0], pixel[1], pixel[2]);
     }
 
     let payload_bits  = total_cells * 3;
