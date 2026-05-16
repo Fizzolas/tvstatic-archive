@@ -147,31 +147,53 @@ pub fn encode_bytes_to_frames_dir_with_progress(
     let mut frames_written = 0u32;
 
     if let Some(fecp) = &p.fec {
-        let packets = fec_encode_stream(input_bytes, fecp).map_err(|e| RasterError::Fec(e.to_string()))?;
+        // Bug fix: empty input_bytes produces zero packets — skip FEC encode entirely
+        // and fall through to writing a manifest with 0 data frames.
+        if input_bytes.is_empty() {
+            let manifest = EncodeManifest {
+                magic: EncodeManifest::MAGIC.to_string(),
+                version: EncodeManifest::VERSION,
+                file_name: file_name.to_string(),
+                total_bytes: 0,
+                chunk_bytes: max_frame_payload,
+                grid_w: p.grid_w,
+                grid_h: p.grid_h,
+                cell_px: p.cell_px,
+                palette: p.palette.id().to_string(),
+                sha256_hex,
+                frames: p.sync_frames + p.calibration_frames,
+                fec_data_shards: fecp.data_shards as u32,
+                fec_parity_shards: fecp.parity_shards as u32,
+                deskew: p.deskew,
+            };
+            fs::write(out_dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+            return Ok(manifest);
+        }
 
+        // Bug fix: validate shard_bytes vs frame capacity before spawning threads
+        // (previously this returned an Err inside thread::scope which could not propagate cleanly)
         if fecp.shard_bytes as u32 > max_frame_payload {
             return Err(RasterError::Fec(format!(
-                "fec shard_bytes {} exceeds frame payload capacity {}",
+                "fec shard_bytes {} exceeds frame payload capacity {} — \
+                 reduce shard_bytes or increase grid size",
                 fecp.shard_bytes, max_frame_payload
             )));
         }
 
-        let total_packets = packets.len() as u64;
+        let packets = fec_encode_stream(input_bytes, fecp).map_err(|e| RasterError::Fec(e.to_string()))?;
 
-        // FIX: use an ordered channel — workers send (frame_index, img) tuples and the
-        // writer collects them into a BTreeMap keyed by frame_index so frames are always
-        // saved in the correct order regardless of which worker thread finishes first.
+        let total_packets = packets.len() as u64;
+        let max_payload = max_frame_payload;
+        let orig_total_bytes = input_bytes.len() as u64;
+
         let (tx_img, rx_img) = mpsc::sync_channel::<(u32, image::ImageBuffer<Rgb<u8>, Vec<u8>>)>(32);
         let packets_arc = Arc::new(packets);
         let p_clone = p.clone();
-        let max_payload = max_frame_payload;
-        let orig_total_bytes = input_bytes.len() as u64;
 
         let num_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         std::thread::scope(|s| {
-            // Worker threads: render frames in parallel
             for _ in 0..num_workers {
                 let tx = tx_img.clone();
                 let pkts = Arc::clone(&packets_arc);
@@ -180,9 +202,7 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                 s.spawn(move || {
                     loop {
                         let idx = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if idx >= pkts.len() {
-                            break;
-                        }
+                        if idx >= pkts.len() { break; }
                         let pkt = &pkts[idx];
 
                         let hdr = ShardHeader {
@@ -203,7 +223,6 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                         padded[..frame_bytes.len()].copy_from_slice(&frame_bytes);
 
                         if let Ok(img) = render_payload_frame(&padded, &params) {
-                            // Include the logical packet index so the writer can sort
                             let _ = tx.send((idx as u32, img));
                         }
                     }
@@ -211,17 +230,12 @@ pub fn encode_bytes_to_frames_dir_with_progress(
             }
             drop(tx_img);
 
-            // Writer thread: collect into a sorted map, then flush in order.
-            // This guarantees frame_XXXXXX.png filenames match their logical position
-            // even when worker threads finish out-of-order.
             use std::collections::BTreeMap;
             let mut pending: BTreeMap<u32, image::ImageBuffer<Rgb<u8>, Vec<u8>>> = BTreeMap::new();
             let mut next_to_write: u32 = 0;
 
             for (pkt_idx, img) in rx_img {
                 pending.insert(pkt_idx, img);
-
-                // Flush any contiguous run we now have
                 while let Some(frame_img) = pending.remove(&next_to_write) {
                     let frame_index = p_clone.sync_frames + p_clone.calibration_frames + next_to_write;
                     frame_img.save(out_dir.join(format!("frame_{:06}.png", frame_index))).ok();
@@ -238,7 +252,6 @@ pub fn encode_bytes_to_frames_dir_with_progress(
                 }
             }
 
-            // Flush any remaining frames (shouldn't happen in normal flow)
             for (_, frame_img) in pending {
                 let frame_index = p_clone.sync_frames + p_clone.calibration_frames + next_to_write;
                 frame_img.save(out_dir.join(format!("frame_{:06}.png", frame_index))).ok();
@@ -259,6 +272,9 @@ pub fn encode_bytes_to_frames_dir_with_progress(
             palette: p.palette.id().to_string(),
             sha256_hex,
             frames: p.sync_frames + p.calibration_frames + frames_written,
+            fec_data_shards: fecp.data_shards as u32,
+            fec_parity_shards: fecp.parity_shards as u32,
+            deskew: p.deskew,
         };
 
         fs::write(out_dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
@@ -284,7 +300,11 @@ pub fn encode_bytes_to_frames_dir_with_progress(
         Ok(manifest)
     } else {
         let max_payload = std::cmp::min(max_frame_payload, p.chunk_bytes) as usize;
-        let total_chunks = (input_bytes.len() + max_payload - 1) / max_payload;
+        let total_chunks = if max_payload == 0 {
+            0
+        } else {
+            (input_bytes.len() + max_payload - 1) / max_payload
+        };
 
         for (i, chunk) in input_bytes.chunks(max_payload).enumerate() {
             let mut frame_payload = vec![0u8; max_payload];
@@ -315,6 +335,9 @@ pub fn encode_bytes_to_frames_dir_with_progress(
             palette: p.palette.id().to_string(),
             sha256_hex,
             frames: p.sync_frames + p.calibration_frames + frames_written,
+            fec_data_shards: 0,
+            fec_parity_shards: 0,
+            deskew: p.deskew,
         };
         fs::write(out_dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
         Ok(manifest)
@@ -358,7 +381,6 @@ pub fn decode_frames_dir_to_bytes_with_progress(
         let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
         std::thread::scope(|s| {
-            // Worker threads: decode frames
             for _ in 0..num_workers {
                 let tx = tx_pkt.clone();
                 let dir = Arc::clone(&in_dir_arc);
@@ -369,9 +391,7 @@ pub fn decode_frames_dir_to_bytes_with_progress(
                     loop {
                         let idx = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let i = start_index + idx;
-                        if i >= m.frames {
-                            break;
-                        }
+                        if i >= m.frames { break; }
 
                         let path = dir.join(format!("frame_{:06}.png", i));
                         let mut out_pkt: Option<ShardPacket> = None;
@@ -399,7 +419,6 @@ pub fn decode_frames_dir_to_bytes_with_progress(
                             }
                         }
 
-                        // Always send one message per processed frame so progress is accurate.
                         let _ = tx.send(out_pkt);
                     }
                 });
@@ -691,18 +710,12 @@ impl ShardHeader {
     }
 
     fn from_bytes(b: &[u8]) -> Self {
-        let mut g = [0u8; 4];
-        g.copy_from_slice(&b[0..4]);
-        let mut si = [0u8; 2];
-        si.copy_from_slice(&b[4..6]);
-        let mut sl = [0u8; 2];
-        sl.copy_from_slice(&b[6..8]);
-        let mut ot = [0u8; 8];
-        ot.copy_from_slice(&b[8..16]);
-        let mut sh = [0u8; 32];
-        sh.copy_from_slice(&b[16..48]);
-        let mut crc = [0u8; 4];
-        crc.copy_from_slice(&b[48..52]);
+        let mut g = [0u8; 4]; g.copy_from_slice(&b[0..4]);
+        let mut si = [0u8; 2]; si.copy_from_slice(&b[4..6]);
+        let mut sl = [0u8; 2]; sl.copy_from_slice(&b[6..8]);
+        let mut ot = [0u8; 8]; ot.copy_from_slice(&b[8..16]);
+        let mut sh = [0u8; 32]; sh.copy_from_slice(&b[16..48]);
+        let mut crc = [0u8; 4]; crc.copy_from_slice(&b[48..52]);
         Self {
             group_index: u32::from_le_bytes(g),
             shard_index: u16::from_le_bytes(si),
@@ -714,32 +727,21 @@ impl ShardHeader {
     }
 
     fn crc_ok(&self, raw: &[u8]) -> bool {
-        if raw.len() < Self::BYTES {
-            return false;
-        }
+        if raw.len() < Self::BYTES { return false; }
         let calc = crc32fast::hash(&raw[..Self::BYTES - 4]);
         calc == self.header_crc32
     }
 }
 
-fn full_grid_w(p: &RasterParams) -> u32 {
-    p.grid_w + 2 * p.border_cells
-}
+fn full_grid_w(p: &RasterParams) -> u32 { p.grid_w + 2 * p.border_cells }
+fn full_grid_h(p: &RasterParams) -> u32 { p.grid_h + 2 * p.border_cells }
 
-fn full_grid_h(p: &RasterParams) -> u32 {
-    p.grid_h + 2 * p.border_cells
-}
-
-/// Render a payload frame. Cells are filled using bulk scan-line writes instead of
-/// one put_pixel call per sub-pixel — this avoids the bounds-checking overhead on
-/// every individual pixel and is measurably faster for large grids.
 fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, RasterError> {
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
 
     let mut img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = image::ImageBuffer::new(w_px, h_px);
 
-    // Border cells (checkerboard pattern)
     for y in 0..full_grid_h(p) {
         for x in 0..full_grid_w(p) {
             let in_payload = x >= p.border_cells
@@ -756,7 +758,6 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::Image
 
     draw_corner_fiducials(&mut img, p);
 
-    // Payload cells: extract all 3-bit symbols in bulk then paint
     let symbols = unpack_3bit_symbols(payload, (p.grid_w * p.grid_h) as usize);
     let mut sym_i = 0usize;
     for y in 0..p.grid_h {
@@ -764,13 +765,7 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::Image
             let sym = symbols[sym_i];
             sym_i += 1;
             let Rgb8 { r, g, b } = p.palette.color(sym).unwrap();
-            paint_cell_fast(
-                &mut img,
-                x + p.border_cells,
-                y + p.border_cells,
-                p.cell_px,
-                r, g, b,
-            );
+            paint_cell_fast(&mut img, x + p.border_cells, y + p.border_cells, p.cell_px, r, g, b);
         }
     }
 
@@ -780,7 +775,6 @@ fn render_payload_frame(payload: &[u8], p: &RasterParams) -> Result<image::Image
 fn draw_corner_fiducials(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, p: &RasterParams) {
     let s = p.fiducial_size_cells;
     let b = p.border_cells;
-
     draw_l(img, b, b, s, p.cell_px, 2);
     draw_l(img, b + p.grid_w - s, b, s, p.cell_px, 3);
     draw_l(img, b, b + p.grid_h - s, s, p.cell_px, 4);
@@ -789,12 +783,10 @@ fn draw_corner_fiducials(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, p: &Ras
 
 fn draw_l(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, x0: u32, y0: u32, s: u32, cell_px: u32, sym: u8) {
     let c = Palette8::Basic.color(sym).unwrap();
-
     for y in y0..(y0 + s) {
         paint_cell_fast(img, x0, y, cell_px, c.r, c.g, c.b);
         paint_cell_fast(img, x0 + 1, y, cell_px, c.r, c.g, c.b);
     }
-
     for x in x0..(x0 + s) {
         paint_cell_fast(img, x, y0, cell_px, c.r, c.g, c.b);
         paint_cell_fast(img, x, y0 + 1, cell_px, c.r, c.g, c.b);
@@ -805,7 +797,6 @@ fn render_solid_frame(p: &RasterParams, symbol: u8) -> Result<image::ImageBuffer
     let w_px = full_grid_w(p) * p.cell_px;
     let h_px = full_grid_h(p) * p.cell_px;
     let Rgb8 { r, g, b } = p.palette.color(symbol).unwrap();
-    // Fill the entire frame in one raw-buffer pass
     let pixel = [r, g, b];
     let raw: Vec<u8> = pixel.iter().cycle().take((w_px * h_px * 3) as usize).cloned().collect();
     Ok(image::ImageBuffer::from_raw(w_px, h_px, raw).expect("buffer size mismatch"))
@@ -861,8 +852,6 @@ fn render_calibration_frame(p: &RasterParams) -> Result<image::ImageBuffer<Rgb<u
     Ok(img)
 }
 
-/// Paint a cell by writing directly into the raw pixel buffer scan-line by scan-line.
-/// Avoids the per-pixel bounds-check overhead of put_pixel in the inner loop.
 #[inline]
 fn paint_cell_fast(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, cx: u32, cy: u32, cell_px: u32, r: u8, g: u8, b: u8) {
     let img_w = img.width();
@@ -880,23 +869,17 @@ fn paint_cell_fast(img: &mut image::ImageBuffer<Rgb<u8>, Vec<u8>>, cx: u32, cy: 
     }
 }
 
-/// Unpack `count` 3-bit symbols from a packed byte slice in a single pass.
-/// Processes bits LSB-first to match the original write_3bits encoding.
-/// This replaces the old read_3bits loop that called back per-bit into the slice.
 #[inline]
 fn unpack_3bit_symbols(bytes: &[u8], count: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(count);
     let mut bit_i = 0usize;
     for _ in 0..count {
-        // Read 3 bits starting at bit_i, LSB-first
         let byte0 = bit_i / 8;
         let bit_off = bit_i % 8;
 
         let sym = if bit_off <= 5 {
-            // All 3 bits fit inside one byte
             (bytes.get(byte0).copied().unwrap_or(0) >> bit_off) & 0x07
         } else {
-            // Spans two bytes
             let lo = bytes.get(byte0).copied().unwrap_or(0);
             let hi = bytes.get(byte0 + 1).copied().unwrap_or(0);
             let bits_in_first = 8 - bit_off;
@@ -911,15 +894,12 @@ fn unpack_3bit_symbols(bytes: &[u8], count: usize) -> Vec<u8> {
     out
 }
 
-/// Write a 3-bit symbol at bit position bit_i in a packed byte buffer, LSB-first.
-/// Used during decode to reassemble payload bytes from sampled grid symbols.
 #[inline]
 fn write_3bits_fast(bytes: &mut [u8], bit_i: usize, sym: u8) {
     let byte0 = bit_i / 8;
     let bit_off = bit_i % 8;
 
     if bit_off <= 5 {
-        // All 3 bits fit in one byte
         if byte0 < bytes.len() {
             let mask = 0x07u8 << bit_off;
             bytes[byte0] = (bytes[byte0] & !mask) | ((sym & 0x07) << bit_off);
@@ -927,10 +907,11 @@ fn write_3bits_fast(bytes: &mut [u8], bit_i: usize, sym: u8) {
     } else {
         // Spans two bytes
         let bits_in_first = 8 - bit_off;
-        let mask0 = !((1u8 << bit_off).wrapping_sub(1) ^ 0xFF) & 0xFF; // upper bits of byte0
-        let mask0 = ((0xFF as u8) << bit_off); // bits [7:bit_off] in byte0
+        // Mask covering the bits [7:bit_off] in byte0
+        let mask0: u8 = 0xFFu8 << bit_off;
         if byte0 < bytes.len() {
-            bytes[byte0] = (bytes[byte0] & !mask0) | ((sym & ((1 << bits_in_first) - 1)) << bit_off);
+            bytes[byte0] = (bytes[byte0] & !mask0)
+                | ((sym & ((1 << bits_in_first) - 1)) << bit_off);
         }
         if byte0 + 1 < bytes.len() {
             let bits_in_second = 3 - bits_in_first;
