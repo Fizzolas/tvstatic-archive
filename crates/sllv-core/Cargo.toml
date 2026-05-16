@@ -1,6 +1,6 @@
 [package]
 name = "sllv-core"
-version = "0.0.22"
+version = "0.0.23"
 edition = "2021"
 
 [dependencies]
@@ -18,3 +18,6 @@ tar = "0.4"
 crc32fast = "1"
 
 nalgebra = "0.33"
+
+# Real Reed-Solomon erasure coding (replaces placeholder zero-filled parity shards)
+reed-solomon-erasure = { version = "6", features = ["simd-accel"] }
