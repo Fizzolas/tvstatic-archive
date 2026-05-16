@@ -363,7 +363,7 @@ pub fn decode_frames_dir_to_bytes_with_progress(
     }
 
     let palette = Palette8::Basic;
-    let start_index = detect_data_start(in_dir, &manifest, p, palette);
+    let start_index = detect_data_start(&manifest, p);
 
     let total_frames = (manifest.frames - start_index) as u64;
 
@@ -753,15 +753,11 @@ fn decode_frame_bytes_inner(
     Ok(out)
 }
 
-/// Detect the index of the first data frame (skip sync + calibration frames).
-fn detect_data_start(
-    in_dir: &Path,
-    manifest: &EncodeManifest,
-    _p: &RasterParams,
-    _palette: Palette8,
-) -> u32 {
-    let _ = in_dir;
-    manifest.frames.saturating_sub(
-        manifest.frames.saturating_sub(manifest.fec_data_shards + manifest.fec_parity_shards)
-    ).max(0)
+/// Returns the index of the first data frame, skipping sync and calibration
+/// frames. Uses the encode-time params (sync_frames + calibration_frames)
+/// which are always available on the decode path, clamped to manifest.frames
+/// so a corrupt/mismatched manifest can't cause an out-of-bounds read.
+fn detect_data_start(manifest: &EncodeManifest, p: &RasterParams) -> u32 {
+    let preamble = p.sync_frames + p.calibration_frames;
+    preamble.min(manifest.frames)
 }
