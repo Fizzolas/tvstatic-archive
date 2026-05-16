@@ -4,7 +4,6 @@ version = "0.0.10"
 edition = "2021"
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-
+anyhow    = { workspace = true }
+clap      = { workspace = true }
 sllv-core = { path = "../sllv-core" }

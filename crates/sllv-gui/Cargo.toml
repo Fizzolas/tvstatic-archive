@@ -9,8 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 sllv-core = { path = "../sllv-core" }
-eframe = "0.27"
-egui = "0.27"
-rfd = "0.14"
-anyhow = "1"
-tar = "0.4"
+anyhow    = { workspace = true }
+tar       = { workspace = true }
+eframe    = "0.27"
+egui      = "0.27"
+rfd       = "0.14"
