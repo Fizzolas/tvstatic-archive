@@ -28,6 +28,8 @@ image       = "0.25"
 # clap 4.6+ requires edition2024 (fine now that our MSRV is 1.85)
 clap        = { version = ">=4.0, <5", features = ["derive"] }
 reed-solomon-erasure = "6"
+nalgebra    = "0.33"
+walkdir     = "2"
 
 [profile.release]
 strip = true

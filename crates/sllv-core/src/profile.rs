@@ -1,4 +1,4 @@
-use crate::{fec::FecParams, raster::RasterParams};
+use crate::{fec::FecParams, palette::Palette8, raster::RasterParams};
 
 /// Encode/decode profile selection.
 ///
@@ -27,6 +27,12 @@ impl Profile {
                 grid_h: 256,
                 cell_px: 2,
                 chunk_bytes: 0, // use max
+                palette: Palette8::Basic,
+                sync_frames: 30,
+                sync_color_symbol: 1,
+                calibration_frames: 1,
+                border_cells: 2,
+                fiducial_size_cells: 12,
                 deskew: false,
                 fec: None,
             },
@@ -41,6 +47,12 @@ impl Profile {
                     grid_h: 256,
                     cell_px: 6,
                     chunk_bytes: 0, // use max
+                    palette: Palette8::Basic,
+                    sync_frames: 30,
+                    sync_color_symbol: 1,
+                    calibration_frames: 1,
+                    border_cells: 2,
+                    fiducial_size_cells: 12,
                     deskew: true,
                     fec: Some(FecParams {
                         data_shards: 12,
